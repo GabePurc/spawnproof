@@ -35,6 +35,15 @@ public final class Main {
 		      --visible            show on the desktop instead
 		      --play               you're playing: never waits, and holds test games back
 		      --label <text>       shown in status (also SPAWNPROOF_LABEL)
+		  test [<tests>] [options] [-- <gradle arguments>]
+		                         In a mod's folder: run its client game tests across games, the longest first by past
+		                         runs, with one set of results
+		      --games <n>          how many games (default: the queue's game slots)
+		      --only-failures      rerun only the tests that failed last time
+		      --skip <tests>       tests to leave out
+		      --clock real         run at normal speed (default: as fast as the games draw)
+		      --graphics normal    normal settings, for screenshots people will see
+		      --task <task>        the game task (default: runClientGameTest)
 		  install [--init-script] Put `spawnproof` in ~/.local/bin; --init-script also queues every Gradle build's games
 		  stop [--force]         Stop the daemon (it starts again with the next game)
 		  version
@@ -86,6 +95,8 @@ public final class Main {
 					return 0;
 				case "run":
 					return runCommand(rest, err);
+				case "test":
+					return test(rest, err);
 				case "install":
 					return install(rest, out);
 				case "version":
@@ -237,20 +248,98 @@ public final class Main {
 			Path initScript = (gradleHome != null ? Path.of(gradleHome) : Path.of(System.getProperty("user.home"), ".gradle"))
 				.resolve("init.d").resolve("spawnproof.gradle");
 			Files.createDirectories(initScript.getParent());
-			Files.writeString(initScript, String.join("\n",
+			Files.writeString(initScript, initScript(jar, List.of(
 				"// Written by `spawnproof install --init-script`: every Gradle build on this machine queues its Minecraft test games",
-				"// through Spawnproof (https://github.com/GabePurc/spawnproof). Delete this file to stop.",
-				"initscript {",
-				"\tdependencies {",
-				"\t\tclasspath files('" + jar.toString().replace("\\", "\\\\").replace("'", "\\'") + "')",
-				"\t}",
-				"}",
-				"beforeSettings { settings ->",
-				"\tsettings.pluginManager.apply(io.github.gabepurc.spawnproof.gradle.SpawnproofPlugin)",
-				"}",
-				""));
+				"// through Spawnproof (https://github.com/GabePurc/spawnproof). Delete this file to stop.")));
 			out.println("Installed " + initScript);
 		}
 		return 0;
+	}
+
+	/** An init script that applies the plugin from this jar to a build (beside any copy it applies itself: the first wins). */
+	private static String initScript(Path jar, List<String> comment) {
+		List<String> lines = new ArrayList<>(comment);
+		lines.addAll(List.of(
+			"initscript {",
+			"\tdependencies {",
+			"\t\tclasspath files('" + jar.toString().replace("\\", "\\\\").replace("'", "\\'") + "')",
+			"\t}",
+			"}",
+			"beforeSettings { settings ->",
+			"\tsettings.pluginManager.apply(io.github.gabepurc.spawnproof.gradle.SpawnproofPlugin)",
+			"}",
+			""));
+		return String.join("\n", lines);
+	}
+
+	/**
+	 * spawnproof test: the mod's game task through its Gradle wrapper, as a test run across games. The plugin comes from this
+	 * jar by an init script, so it works in any mod's folder; a build with the plugin applied already uses this copy.
+	 */
+	private static int test(List<String> args, PrintStream err) throws IOException, UsageException {
+		String usage = "test [<tests>] [--games <n>] [--only-failures] [--skip <tests>] [--clock real] [--graphics normal] [--task <task>] "
+			+ "[-- <gradle arguments>]";
+		List<String> tests = new ArrayList<>();
+		Map<String, String> options = new LinkedHashMap<>();
+		boolean onlyFailures = false;
+		List<String> gradleArgs = new ArrayList<>();
+		for (int i = 0; i < args.size(); i++) {
+			String a = args.get(i);
+			if (a.equals("--")) {
+				gradleArgs.addAll(args.subList(i + 1, args.size()));
+				break;
+			}
+			switch (a) {
+				case "--only-failures" -> onlyFailures = true;
+				case "--games", "--skip", "--clock", "--graphics", "--task" -> {
+					if (++i >= args.size()) throw new UsageException(usage);
+					options.put(a.substring(2), args.get(i));
+				}
+				default -> {
+					if (a.startsWith("-")) throw new UsageException(usage);
+					tests.add(a);
+				}
+			}
+		}
+		String games = options.get("games");
+		if (games != null && !games.matches("[1-9][0-9]*")) throw new UsageException("test --games <n>, a number of games from 1 up");
+
+		Path here = Path.of("").toAbsolutePath();
+		Path wrapper = null;
+		for (Path dir = here; dir != null && wrapper == null; dir = dir.getParent()) {
+			Path candidate = dir.resolve(Dirs.isWindows() ? "gradlew.bat" : "gradlew");
+			if (Files.isRegularFile(candidate)) wrapper = candidate;
+		}
+		if (wrapper == null) throw new IOException("no Gradle wrapper (gradlew) in " + here + " or above it: run spawnproof test in a mod's folder");
+
+		List<String> command = new ArrayList<>();
+		command.add(wrapper.toString());
+		command.add(options.getOrDefault("task", "runClientGameTest"));
+		command.add("-Pspawnproof.games" + (games != null ? "=" + games : ""));
+		if (!tests.isEmpty()) command.add("-Pspawnproof.tests=" + String.join(",", tests));
+		if (options.containsKey("skip")) command.add("-Pspawnproof.skip=" + options.get("skip"));
+		if (options.containsKey("clock")) command.add("-Pspawnproof.clock=" + options.get("clock"));
+		if (options.containsKey("graphics")) command.add("-Pspawnproof.graphics=" + options.get("graphics"));
+		if (onlyFailures) command.add("-Pspawnproof.onlyFailures");
+		command.addAll(gradleArgs);
+		err.println("spawnproof: " + String.join(" ", command));
+
+		Path jar = DaemonStarter.classpath();
+		if (Files.isDirectory(jar)) {
+			err.println("spawnproof: (running from classes, not a jar: the build uses its own copy of the plugin, if it has one)");
+		} else {
+			Path script = Dirs.state().resolve("init").resolve("spawnproof-test.gradle");
+			Files.createDirectories(script.getParent());
+			Files.writeString(script, initScript(jar, List.of("// Written by `spawnproof test`, which runs builds with it: it applies the plugin from Spawnproof's jar.")));
+			command.addAll(2, List.of("-I", script.toString()));
+		}
+		Process p = new ProcessBuilder(command).inheritIO().directory(here.toFile()).start();
+		try {
+			return p.waitFor();
+		} catch (InterruptedException e) {
+			p.destroy();
+			Thread.currentThread().interrupt();
+			return 130;
+		}
 	}
 }

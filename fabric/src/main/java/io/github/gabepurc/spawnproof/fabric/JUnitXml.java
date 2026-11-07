@@ -1,5 +1,6 @@
 package io.github.gabepurc.spawnproof.fabric;
 
+import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 
@@ -17,6 +18,32 @@ final class JUnitXml {
 		int cases = 0;
 		StringBuilder suites = new StringBuilder();
 		for (TestRecord t : results.tests()) {
+			Suite suite = suite(t);
+			suites.append(suite.xml());
+			failures += suite.failures();
+			errors += suite.errors();
+			cases += suite.cases();
+		}
+		out.append("<testsuites name=\"spawnproof\" tests=\"").append(cases).append("\" failures=\"").append(failures).append("\" errors=\"")
+			.append(errors).append("\" time=\"").append(seconds(results.durationMs())).append("\">\n");
+		out.append(suites).append("</testsuites>\n");
+		return out.toString();
+	}
+
+	/** One test's suite, with its counts: a test run merges its games' suites into one junit.xml. */
+	record Suite(String xml, int cases, int failures, int errors) {
+		Map<String, Object> toMap() {
+			Map<String, Object> m = new LinkedHashMap<>();
+			m.put("xml", xml);
+			m.put("cases", cases);
+			m.put("failures", failures);
+			m.put("errors", errors);
+			return m;
+		}
+	}
+
+	static Suite suite(TestRecord t) {
+		synchronized (t) {
 			StringBuilder suite = new StringBuilder();
 			int suiteFailures = 0;
 			int suiteErrors = 0;
@@ -58,18 +85,11 @@ final class JUnitXml {
 				suite.append("    <testcase classname=\"").append(attr(classPrefix)).append("\" name=\"(stopped)\" time=\"0\">\n")
 					.append("      <failure message=\"").append(attr(t.stopReason)).append("\"/>\n    </testcase>\n");
 			}
-			suites.append("  <testsuite name=\"").append(attr(t.test.name())).append("\" tests=\"").append(suiteCases).append("\" failures=\"")
-				.append(suiteFailures).append("\" errors=\"").append(suiteErrors).append("\" skipped=\"")
-				.append(t.status.equals(TestRecord.NOT_RUN) ? 1 : 0).append("\" time=\"").append(seconds(t.status.equals(TestRecord.NOT_RUN) ? 0 : t.durationMs()))
-				.append("\">\n").append(suite).append("  </testsuite>\n");
-			failures += suiteFailures;
-			errors += suiteErrors;
-			cases += suiteCases;
+			String xml = "  <testsuite name=\"" + attr(t.test.name()) + "\" tests=\"" + suiteCases + "\" failures=\"" + suiteFailures + "\" errors=\""
+				+ suiteErrors + "\" skipped=\"" + (t.status.equals(TestRecord.NOT_RUN) ? 1 : 0) + "\" time=\""
+				+ seconds(t.status.equals(TestRecord.NOT_RUN) ? 0 : t.durationMs()) + "\">\n" + suite + "  </testsuite>\n";
+			return new Suite(xml, suiteCases, suiteFailures, suiteErrors);
 		}
-		out.append("<testsuites name=\"spawnproof\" tests=\"").append(cases).append("\" failures=\"").append(failures).append("\" errors=\"")
-			.append(errors).append("\" time=\"").append(seconds(results.durationMs())).append("\">\n");
-		out.append(suites).append("</testsuites>\n");
-		return out.toString();
 	}
 
 	private static String failureMessage(Map<String, Object> c) {

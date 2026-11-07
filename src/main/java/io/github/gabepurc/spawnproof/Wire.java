@@ -61,7 +61,12 @@ public final class Wire implements Closeable {
 	}
 
 	public void send(Map<String, ?> message) throws IOException {
-		ByteBuffer out = ByteBuffer.wrap((Json.write(message) + "\n").getBytes(StandardCharsets.UTF_8));
+		sendLine(Json.write(message));
+	}
+
+	/** A line of plain text: a test run answers its games this way, so they needn't read JSON. */
+	public void sendLine(String line) throws IOException {
+		ByteBuffer out = ByteBuffer.wrap((line + "\n").getBytes(StandardCharsets.UTF_8));
 		synchronized (writeLock) {
 			while (out.hasRemaining()) channel.write(out);
 		}

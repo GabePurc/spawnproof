@@ -39,7 +39,7 @@ dependencies {
 ```
 
 To try changes that aren't released yet, run `./gradlew :fabric:publishToMavenLocal` in a clone of this repository, then
-depend on `0.2.0-SNAPSHOT` from Maven Local:
+depend on `0.3.0-SNAPSHOT` from Maven Local:
 
 ```groovy
 repositories {
@@ -120,7 +120,9 @@ Spawnproof reads these system properties:
 | `spawnproof.graphics` | `low` (default) or `normal`, for screenshots people will see |
 | `spawnproof.output` | The results folder; `spawnproof/` in the game folder by default |
 
-To pass them from the command line, in the mod's build:
+With Spawnproof's Gradle plugin (the [main README](../README.md#setup)), `-Pspawnproof.tests=hat` and the others on the
+command line reach every test game: `./gradlew runClientGameTest -Pspawnproof.tests=hat`. Without it, pass them on in the
+mod's build:
 
 ```groovy
 tasks.named('runClientGameTest') {
@@ -131,13 +133,18 @@ tasks.named('runClientGameTest') {
 }
 ```
 
-Then `./gradlew runClientGameTest -Pspawnproof.tests=hat`.
-
 A name in `spawnproof.tests` that matches no test fails the run before anything starts. A typo would otherwise run
 nothing and pass.
 
 The game's exit code fails the Gradle task when any test fails. The console ends with a short summary: what failed, and
 where the results are.
+
+### Across several games
+
+`spawnproof test`, in a mod's folder, runs its tests across several games at once, with one set of results
+([the main README](../README.md#running-a-mods-tests-spawnproof-test) says how). Each game takes one test at a time from the
+run, so the tests needn't know they share out: each still starts from the title screen with the default options. A test
+that leaves a world open stops only its own game taking more; the others carry on with the rest.
 
 ### Results
 
@@ -157,6 +164,10 @@ Spawnproof results: failed
 `results.json` holds the same, plus the game's versions and mods. Each test has its status (`passed`, `failed`, `error` or
 `not-run`), duration, ticks, checks, screenshots, error and the warnings and errors logged while it ran. Its `format` and
 `version` fields name the format, and `version` goes up when a field's meaning changes.
+
+A test run's merged `results.json` is the same format with a few more fields: `games` (each game, the tests it ran, its
+folder and exit code, and why it stopped if it stopped early), each test's `game`, `notes` (such as which tests a rerun
+picked), and `selection.onlyFailures`.
 
 ## The frame clock
 

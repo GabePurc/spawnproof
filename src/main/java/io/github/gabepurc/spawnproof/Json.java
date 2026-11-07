@@ -6,7 +6,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** The small JSON the daemon and its clients exchange: objects, arrays, strings, whole numbers, booleans and null. */
+/**
+ * The small JSON Spawnproof reads and writes: what the daemon and its clients exchange, and test results. Objects, arrays,
+ * strings, numbers, booleans and null.
+ */
 public final class Json {
 	private Json() {}
 
@@ -14,6 +17,49 @@ public final class Json {
 		StringBuilder out = new StringBuilder();
 		write(out, value);
 		return out.toString();
+	}
+
+	/**
+	 * Indented, for files people open too (a test run's results.json). Laid out as Spawnproof for Fabric lays out its own, so
+	 * a merged results.json reads like a single game's.
+	 */
+	public static String pretty(Object value) {
+		StringBuilder out = new StringBuilder();
+		pretty(out, value, 0);
+		return out.append('\n').toString();
+	}
+
+	private static void pretty(StringBuilder out, Object value, int depth) {
+		if (value instanceof Map<?, ?> map) {
+			out.append('{');
+			boolean first = true;
+			for (Map.Entry<?, ?> e : map.entrySet()) {
+				if (!first) out.append(',');
+				first = false;
+				out.append('\n').append("  ".repeat(depth + 1));
+				string(out, String.valueOf(e.getKey()));
+				out.append(": ");
+				pretty(out, e.getValue(), depth + 1);
+			}
+			if (!map.isEmpty()) out.append('\n').append("  ".repeat(depth));
+			out.append('}');
+		} else if (value instanceof Collection<?> list) {
+			// Short lists of plain values stay on one line: tags, a check's numbers.
+			boolean flat = list.size() <= 8
+				&& list.stream().allMatch(v -> v == null || v instanceof String s && s.length() < 40 || v instanceof Number || v instanceof Boolean);
+			out.append('[');
+			boolean first = true;
+			for (Object v : list) {
+				if (!first) out.append(flat ? ", " : ",");
+				first = false;
+				if (!flat) out.append('\n').append("  ".repeat(depth + 1));
+				pretty(out, v, depth + 1);
+			}
+			if (!flat && !list.isEmpty()) out.append('\n').append("  ".repeat(depth));
+			out.append(']');
+		} else {
+			write(out, value);
+		}
 	}
 
 	private static void write(StringBuilder out, Object value) {
@@ -25,7 +71,9 @@ public final class Json {
 			out.append(value);
 		} else if (value instanceof Number n) {
 			double d = n.doubleValue();
-			out.append(Double.isFinite(d) ? Double.toString(d) : "null");
+			if (!Double.isFinite(d)) out.append("null");
+			else if (d == Math.rint(d) && Math.abs(d) < 1e15) out.append((long) d);
+			else out.append(d);
 		} else if (value instanceof Map<?, ?> map) {
 			out.append('{');
 			boolean first = true;

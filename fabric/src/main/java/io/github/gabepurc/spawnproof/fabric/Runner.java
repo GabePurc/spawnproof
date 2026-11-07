@@ -8,6 +8,7 @@ import net.fabricmc.fabric.impl.client.gametest.util.WindowHooks;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.TitleScreen;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -18,6 +19,9 @@ import java.util.Map;
  * fails or throws is recorded and the next runs; only one that leaves a world open stops the rest, as nothing after it
  * could start clean. The results are written as the run goes ({@link Results}); at the end the run fails if any test did,
  * which fails the game's exit code and so its Gradle task.
+ *
+ * <p>A game that's one of several in a test run ({@link Dispatch}) runs the tests the run hands it instead, one at a time,
+ * and leaves the verdict to the run.
  */
 public final class Runner implements FabricClientGameTest {
 	private static volatile Results results;
@@ -39,49 +43,95 @@ public final class Runner implements FabricClientGameTest {
 		List<Candidate> all = Candidate.findAll(SpawnproofClient.modFilter);
 		List<Candidate> picked = new ArrayList<>();
 		for (Candidate c : all) if (selection.picks(c)) picked.add(c);
+		List<String> unmatched = selection.unmatched(all);
+		String blocked = unmatched.isEmpty() ? null : "spawnproof.tests names a test that doesn't exist, so nothing ran";
+		Dispatch dispatch = Dispatch.fromEnvironment();
 
-		Results r = Results.open(Settings.output(), selection);
+		Results r = Results.open(Settings.output(), selection, dispatch != null);
 		results = r;
-		r.plan(picked, all.size() - picked.size());
+		// In a test run, this game's results list only the tests it was given.
+		r.plan(dispatch == null ? picked : List.of(), dispatch == null ? all.size() - picked.size() : 0);
 		Runtime.getRuntime().addShutdownHook(new Thread(() -> r.finish(
 			"the game closed while this test ran: it crashed, was stopped, or ran out of time (see logs/latest.log and crash-reports/)"),
 			"Spawnproof results"));
 		LogCapture logs = LogCapture.install(r);
 
-		List<String> unmatched = selection.unmatched(all);
+		List<String> problems = new ArrayList<>();
 		if (!unmatched.isEmpty()) {
-			r.problem("spawnproof.tests names no test: " + String.join(", ", unmatched) + ". The tests are: " + names(all));
+			problems.add("spawnproof.tests names no test: " + String.join(", ", unmatched) + ". The tests are: " + names(all));
 		} else if (all.isEmpty()) {
-			r.problem("no tests found: list them in a mod's fabric.mod.json under the \"spawnproof\" entrypoint");
-		} else if (picked.isEmpty()) {
-			r.problem("no test picked (spawnproof.tests, spawnproof.skip). The tests are: " + names(all));
+			problems.add("no tests found: list them in a mod's fabric.mod.json under the \"spawnproof\" entrypoint");
+		} else if (picked.isEmpty() && dispatch == null) {
+			// (A test run says this itself: rerunning only what failed, it can pick tests the settings don't.)
+			problems.add("no test picked (spawnproof.tests, spawnproof.skip). The tests are: " + names(all));
+		}
+		for (String p : problems) r.problem(p);
+
+		if (dispatch != null) {
+			runDispatched(game, dispatch, all, picked, problems, blocked, r, logs);
+			return;
 		}
 		say("running " + Results.plural(picked.size(), "test") + (picked.isEmpty() ? "" : ": " + names(picked)) + " (" + Clock.name()
 			+ ", graphics " + (Settings.LOW_GRAPHICS ? "low" : "normal") + ")");
-
-		String blocked = null;
-		if (!r.tests().isEmpty() && !unmatched.isEmpty()) blocked = "spawnproof.tests names a test that doesn't exist, so nothing ran";
 		for (TestRecord record : r.tests()) {
 			if (blocked != null) {
 				record.notRun(blocked);
 				continue;
 			}
-			r.begin(record);
-			game.restoreDefaultGameOptions();
-			try {
-				record.test.run(game, new Context(game, record, r, logs));
-			} catch (TestStopped stopped) {
-				record.stopped(stopped.getMessage());
-			} catch (Throwable e) {
-				record.error(e);
-			}
-			blocked = cleanUp(game, record);
-			r.end(record);
-			say(record.test.name() + ": " + record.status + " (" + Results.duration(record.durationMs()) + ", " + record.ticks + " ticks)");
+			blocked = runOne(game, record, r, logs);
 		}
 		r.finish(null);
 		summarize(r);
 		if (r.status().equals("failed")) throw new AssertionError("Spawnproof: " + r.summaryLine() + " See " + r.dir().resolve("report.txt"));
+	}
+
+	/**
+	 * One game of a test run: it takes one test at a time from the run until there are none left. The run merges every
+	 * game's results and fails the build if a test failed, so this game ends cleanly either way: a game that exits with an
+	 * error is one that crashed.
+	 */
+	private static void runDispatched(ClientGameTestContext game, Dispatch dispatch, List<Candidate> all, List<Candidate> picked,
+		List<String> problems, String blocked, Results r, LogCapture logs) {
+		say("game " + dispatch.game + " of a test run: taking tests from it one at a time (" + Clock.name() + ", graphics "
+			+ (Settings.LOW_GRAPHICS ? "low" : "normal") + ")");
+		try {
+			dispatch.hello(all, picked, problems, blocked, r.runInfo());
+		} catch (IOException e) {
+			throw new IllegalStateException("Spawnproof: couldn't reach the test run that started this game: " + e.getMessage(), e);
+		}
+		String name;
+		while ((name = dispatch.next()) != null) {
+			Candidate test = null;
+			for (Candidate c : all) if (c.name().equals(name)) test = c;
+			if (test == null) {
+				// (The run only hands out tests this game listed.)
+				dispatch.done(name, null, null);
+				continue;
+			}
+			TestRecord record = r.add(test);
+			String leaving = runOne(game, record, r, logs);
+			dispatch.done(name, r.writePart(record), leaving);
+			if (leaving != null) break;
+		}
+		r.finish(null);
+		dispatch.close();
+	}
+
+	/** Runs one test and cleans up after it. Returns null if the next test can start, or why not. */
+	private static String runOne(ClientGameTestContext game, TestRecord record, Results r, LogCapture logs) {
+		r.begin(record);
+		game.restoreDefaultGameOptions();
+		try {
+			record.test.run(game, new Context(game, record, r, logs));
+		} catch (TestStopped stopped) {
+			record.stopped(stopped.getMessage());
+		} catch (Throwable e) {
+			record.error(e);
+		}
+		String blocked = cleanUp(game, record);
+		r.end(record);
+		say(record.test.name() + ": " + record.status + " (" + Results.duration(record.durationMs()) + ", " + record.ticks + " ticks)");
+		return blocked;
 	}
 
 	/**

@@ -78,22 +78,30 @@ final class HiddenLauncher implements JavaLauncher {
 	}
 
 	static Path wrapperFor(Path realJava) {
+		String text = "#!/bin/sh\n"
+			+ "# Written by Spawnproof: runs a test game on the hidden display while it's up, then the real java.\n"
+			+ "f=" + quote(Dirs.displayFile().toString()) + "\n"
+			+ "if [ -r \"$f\" ]; then\n"
+			+ "\td=$(cat \"$f\")\n"
+			+ "\tif [ -S \"/tmp/.X11-unix/X${d#:}\" ]; then\n"
+			+ "\t\tDISPLAY=\"$d\"\n"
+			+ "\t\tXDG_SESSION_TYPE=x11\n"
+			+ "\t\texport DISPLAY XDG_SESSION_TYPE\n"
+			+ "\t\tunset WAYLAND_DISPLAY\n"
+			+ "\tfi\n"
+			+ "fi\n"
+			+ "exec " + quote(realJava.toString()) + " \"$@\"\n";
+		return script(realJava.toString(), text);
+	}
+
+	/**
+	 * A launcher script in Spawnproof's state folder, named by a hash of what it wraps, written again only when its text
+	 * changes (a running game may be reading it).
+	 */
+	static Path script(String key, String text) {
 		try {
-			String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(realJava.toString().getBytes(StandardCharsets.UTF_8)));
+			String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(key.getBytes(StandardCharsets.UTF_8)));
 			Path script = Dirs.state().resolve("launchers").resolve(hash.substring(0, 16)).resolve("java");
-			String text = "#!/bin/sh\n"
-				+ "# Written by Spawnproof: runs a test game on the hidden display while it's up, then the real java.\n"
-				+ "f=" + quote(Dirs.displayFile().toString()) + "\n"
-				+ "if [ -r \"$f\" ]; then\n"
-				+ "\td=$(cat \"$f\")\n"
-				+ "\tif [ -S \"/tmp/.X11-unix/X${d#:}\" ]; then\n"
-				+ "\t\tDISPLAY=\"$d\"\n"
-				+ "\t\tXDG_SESSION_TYPE=x11\n"
-				+ "\t\texport DISPLAY XDG_SESSION_TYPE\n"
-				+ "\t\tunset WAYLAND_DISPLAY\n"
-				+ "\tfi\n"
-				+ "fi\n"
-				+ "exec " + quote(realJava.toString()) + " \"$@\"\n";
 			if (!Files.isRegularFile(script) || !Files.readString(script).equals(text)) {
 				Files.createDirectories(script.getParent());
 				Path temp = Files.createTempFile(script.getParent(), "java", ".tmp");
@@ -109,7 +117,7 @@ final class HiddenLauncher implements JavaLauncher {
 		}
 	}
 
-	private static String quote(String s) {
+	static String quote(String s) {
 		return "'" + s.replace("'", "'\\''") + "'";
 	}
 }
