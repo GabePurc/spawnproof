@@ -13,9 +13,12 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -186,6 +189,30 @@ class QueueFunctionalTest {
 		assertTrue(System.currentTimeMillis() - start < 40_000, "stopped well before the game's 60 s");
 		assertTrue(result.getOutput().contains("ran past its timeout"), result.getOutput());
 		assertFalse(Files.exists(a.resolve("ran.txt")), "the game didn't finish");
+	}
+
+	@Test
+	void aNewDaemonWaitsForTheOldOneToLetGo() throws Exception {
+		// As a replaced daemon does on its way out: it no longer answers, but it holds the lock until it's gone.
+		Files.createDirectories(home.resolve("state"));
+		try (FileChannel file = FileChannel.open(home.resolve("state/daemon.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+			FileLock old = file.lock();
+			Thread letGo = new Thread(() -> {
+				try {
+					Thread.sleep(3_000);
+					old.release();
+				} catch (Exception e) {
+					throw new RuntimeException(e);
+				}
+			});
+			letGo.start();
+			try (Client.Connection c = Client.connect(true)) {
+				assertEquals(io.github.gabepurc.spawnproof.Version.VERSION, c.version, "the new daemon took over");
+			}
+			letGo.join();
+		}
+		Map<String, Object> status = Client.call(Map.of("type", "status"), false);
+		assertTrue(status.containsKey("running"), status.toString());
 	}
 
 	@Test
