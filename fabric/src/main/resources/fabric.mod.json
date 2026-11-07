@@ -1,0 +1,24 @@
+{
+	"schemaVersion": 1,
+	"id": "spawnproof",
+	"version": "${version}",
+	"name": "Spawnproof",
+	"description": "Runs a mod's client game tests: named checks, results other programs can read, and test games that run as fast as they can draw.",
+	"authors": ["GabePurc"],
+	"contact": {
+		"sources": "https://github.com/GabePurc/spawnproof",
+		"issues": "https://github.com/GabePurc/spawnproof/issues"
+	},
+	"license": "MIT",
+	"environment": "client",
+	"entrypoints": {
+		"client": ["io.github.gabepurc.spawnproof.fabric.SpawnproofClient"],
+		"fabric-client-gametest": ["io.github.gabepurc.spawnproof.fabric.Runner"]
+	},
+	"mixins": ["spawnproof.mixins.json"],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~${minecraft}",
+		"fabric-client-gametest-api-v1": "*"
+	}
+}
