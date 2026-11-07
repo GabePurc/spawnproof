@@ -1,7 +1,7 @@
 name: Release
 
-# Publishing a GitHub release tagged vX.Y.Z puts that version out: Spawnproof for Fabric on Maven Central, the Gradle plugin
-# on the Gradle Plugin Portal, and the jar the command installs from on the release itself. The tag has to be on a commit
+# Publishing a GitHub release tagged vX.Y.Z puts that version out: each loader's library on Maven Central (Spawnproof for
+# Fabric so far), the Gradle plugin on the Gradle Plugin Portal, and the jar the command installs from on the release itself. The tag has to be on a commit
 # whose gradle.properties says X.Y.Z-SNAPSHOT, so a release is always the version main was working towards.
 #
 # Each place is its own job: if one fails, "Re-run failed jobs" retries only that one. Maven Central keeps every release for

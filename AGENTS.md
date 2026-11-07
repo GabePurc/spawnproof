@@ -35,8 +35,8 @@ The README says what each does for its users. `fabric/README.md` covers the test
 
 - `version` in `gradle.properties` is the next release, as a snapshot (`0.2.0-SNAPSHOT`).
 - A release is a GitHub release on `main` tagged `v0.2.0`, made only when the user asks: Maven Central keeps every version
-  for good. `.github/workflows/release.yml` checks the tag against `gradle.properties`, then puts Spawnproof for Fabric on
-  Maven Central, the plugin on the Gradle Plugin Portal and the jar on the release. If one of those jobs fails, rerun only
+  for good. `.github/workflows/release.yml` checks the tag against `gradle.properties`, then puts each loader's library on
+  Maven Central (`spawnproof-fabric` so far), the plugin on the Gradle Plugin Portal and the jar on the release. If one of those jobs fails, rerun only
   that job.
 - After a release, the next change's PR moves `version` on to the next snapshot.
 - The workflow's secrets:

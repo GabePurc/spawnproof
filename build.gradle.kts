@@ -12,7 +12,8 @@ repositories {
 }
 
 dependencies {
-	// Spawnproof for Fabric is what goes to Maven Central. This plugin goes to the Gradle Plugin Portal instead.
+	// Each loader's library goes to Maven Central (spawnproof-fabric so far; a NeoForge or Forge one is added here too).
+	// This plugin goes to the Gradle Plugin Portal instead.
 	nmcpAggregation(project(":fabric"))
 
 	testImplementation(platform("org.junit:junit-bom:5.11.4"))
