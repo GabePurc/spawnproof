@@ -8,6 +8,7 @@ import org.gradle.api.initialization.Settings;
 import org.gradle.api.invocation.Gradle;
 import org.gradle.api.plugins.ExtraPropertiesExtension;
 import org.gradle.api.plugins.PluginAware;
+import org.gradle.api.provider.ListProperty;
 import org.gradle.api.provider.Property;
 import org.gradle.api.provider.Provider;
 import org.gradle.api.provider.ProviderFactory;
@@ -17,6 +18,7 @@ import org.gradle.build.event.BuildEventsListenerRegistry;
 import javax.inject.Inject;
 import java.time.Duration;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -32,6 +34,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public abstract class SpawnproofPlugin implements Plugin<PluginAware> {
 	/** Set on a project once configured, so a second copy of the plugin (an init script's and the build's) does nothing. */
 	private static final String CONFIGURED = "io.github.gabepurc.spawnproof.configured";
+	/** Spawnproof for Fabric's settings, passed from the command line (-Pspawnproof.tests=hat) to every test game. */
+	static final List<String> GAME_PROPERTIES = List.of("spawnproof.tests", "spawnproof.skip", "spawnproof.clock", "spawnproof.graphics");
 	private static final Set<Gradle> LISTENING = Collections.newSetFromMap(new WeakHashMap<>());
 
 	@Inject
@@ -70,21 +74,42 @@ public abstract class SpawnproofPlugin implements Plugin<PluginAware> {
 		Provider<String> ci = providers.environmentVariable("CI");
 		Provider<String> visible = providers.gradleProperty("spawnproof.visible");
 		Provider<String> alone = providers.gradleProperty("spawnproof.exclusive");
+		Provider<String> games = providers.gradleProperty("spawnproof.games");
+		Provider<String> onlyFailures = providers.gradleProperty("spawnproof.onlyFailures");
+		Map<String, Provider<String>> passed = new LinkedHashMap<>();
+		for (String name : GAME_PROPERTIES) passed.put(name, providers.gradleProperty(name));
 		String projectName = project.getRootProject().getName();
 		String rootDir = project.getRootDir().getAbsolutePath();
 		Map<String, Provider<String>> found = new ConcurrentHashMap<>();
 		List<Takeover> takeovers = new CopyOnWriteArrayList<>();
-		// A test game's Gradle timeout would start counting while it waits in line: Spawnproof takes it over and counts it
-		// from when the game starts (TimeLimit). Read once the graph is known, after the build has set its timeouts.
+		// Read once the graph is known, after the build has configured its tasks, so these win over the build's own settings:
+		// - the command line's settings for Spawnproof for Fabric go to every test game;
+		// - a test game's Gradle timeout would start counting while it waits in line, so Spawnproof takes it over and counts
+		//   it from when the game starts (TimeLimit);
+		// - with -Pspawnproof.games or -Pspawnproof.onlyFailures, the game's java becomes a test run (TestRunLauncher).
 		project.getGradle().getTaskGraph().whenReady(graph -> {
+			boolean testRun = games.isPresent() || flag(onlyFailures);
 			for (Takeover t : takeovers) {
-				if (!graph.hasTask(t.task()) || !Rules.TEST.equals(t.role().get())) continue;
-				Duration limit = t.task().getTimeout().getOrNull();
-				if (limit == null) continue;
-				t.limit().set(limit);
-				t.task().getTimeout().set((Duration) null);
+				if (!graph.hasTask(t.task()) || !Rules.TEST.equals(t.kind().get())) continue;
+				passSettings(t.task(), passed);
+				if (Rules.TEST.equals(t.role().get())) {
+					Duration limit = t.task().getTimeout().getOrNull();
+					if (limit != null) {
+						t.limit().set(limit);
+						t.task().getTimeout().set((Duration) null);
+					}
+				}
+				if (!testRun) continue;
+				if (t.task() instanceof JavaExec) {
+					t.testRun().set(true);
+				} else {
+					project.getLogger().warn("Spawnproof: {} runs its tests in one game: splitting them works with JavaExec game tasks so far",
+						t.task().getPath());
+				}
 			}
 		});
+
+		if (games.isPresent() || flag(onlyFailures)) TestRunLauncher.installAfterJava(project);
 
 		project.getTasks().configureEach(task -> {
 			boolean productionRun = isProductionClientRun(task);
@@ -93,20 +118,24 @@ public abstract class SpawnproofPlugin implements Plugin<PluginAware> {
 			GameSettings settings = task.getExtensions().create("spawnproof", GameSettings.class);
 			String name = task.getName();
 			String path = task.getPath();
+			// What the task is, by its name and settings; and how it queues, which is not at all with the queue turned off.
+			Provider<String> kind = providers.provider(() -> Rules.role(name, path, productionRun, settings, ext, shared));
 			Provider<String> role = providers.provider(() -> {
 				if (flag(off) || isOff(offEnv.getOrNull())) return Rules.NONE;
 				Boolean enabled = Rules.enabled(ext, shared);
 				if (enabled == null) enabled = !flag(ci);
-				return enabled ? Rules.role(name, path, productionRun, settings, ext, shared) : Rules.NONE;
+				return enabled ? kind.get() : Rules.NONE;
 			});
 			Provider<Boolean> exclusive = providers.provider(() -> Rules.exclusive(name, path, settings, ext, shared, flag(alone)));
 			Provider<Boolean> hidden = providers.provider(() -> Rules.hidden(settings, ext, shared, flag(visible)));
 			found.put(name, role.zip(exclusive, (r, x) -> r + (Rules.TEST.equals(r) && x ? ", alone" : ""))
 				.zip(hidden, (r, h) -> r + (r.startsWith(Rules.TEST) ? h ? ", hidden" : ", visible" : "")));
 			Property<Duration> limit = project.getObjects().property(Duration.class);
-			takeovers.add(new Takeover(task, role, limit));
+			Property<Boolean> testRun = project.getObjects().property(Boolean.class).convention(false);
+			takeovers.add(new Takeover(task, kind, role, limit, testRun));
 			task.usesService(service);
-			task.doFirst(new AcquireAction(service, role, exclusive, hidden, limit, projectName, rootDir));
+			Provider<Boolean> rerun = providers.provider(() -> flag(onlyFailures));
+			task.doFirst(new AcquireAction(service, role, exclusive, hidden, limit, projectName, rootDir, testRun, games, rerun));
 			task.doLast(new TimeLimit.Stop(service));
 			if (productionRun && Dirs.isLinux()) {
 				HiddenLauncher.install(task, project, role.zip(hidden, (r, h) -> h && Rules.TEST.equals(r)));
@@ -138,7 +167,28 @@ public abstract class SpawnproofPlugin implements Plugin<PluginAware> {
 		}
 	}
 
-	private record Takeover(Task task, Provider<String> role, Property<Duration> limit) {}
+	private record Takeover(Task task, Provider<String> kind, Provider<String> role, Property<Duration> limit, Property<Boolean> testRun) {}
+
+	/** -Pspawnproof.tests and the like, to the game as system properties: JavaExec's own, or a production run's JVM arguments. */
+	@SuppressWarnings("unchecked")
+	private static void passSettings(Task task, Map<String, Provider<String>> passed) {
+		for (Map.Entry<String, Provider<String>> e : passed.entrySet()) {
+			String value = e.getValue().getOrNull();
+			if (value == null) continue;
+			if (task instanceof JavaExec exec) {
+				exec.systemProperty(e.getKey(), value);
+				continue;
+			}
+			try {
+				// (Loom's production runs: the last -D of a name wins, so this goes after the build's own.)
+				((ListProperty<String>) task.getClass().getMethod("getJvmArgs").invoke(task)).add("-D" + e.getKey() + "=" + value);
+			} catch (ReflectiveOperationException | ClassCastException ignored) {
+				// A game task with no JVM arguments to give.
+			} catch (RuntimeException fixed) {
+				task.getLogger().warn("Spawnproof: couldn't pass -P{} on to {} ({})", e.getKey(), task.getPath(), fixed.getMessage());
+			}
+		}
+	}
 
 	/** -Pspawnproof.off, -Pspawnproof.visible: present and not "false". */
 	private static boolean flag(Provider<String> property) {

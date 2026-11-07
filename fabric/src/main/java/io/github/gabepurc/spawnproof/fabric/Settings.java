@@ -16,7 +16,8 @@ import java.util.Locale;
  * <li>{@code spawnproof.skip}: tests to leave out, the same way.
  * <li>{@code spawnproof.clock}: {@code frames} (default: the game runs as fast as it draws) or {@code real}.
  * <li>{@code spawnproof.graphics}: {@code low} (default: the lowest settings) or {@code normal} (for screenshots people see).
- * <li>{@code spawnproof.output}: the results folder; {@code spawnproof/} in the game's folder by default.
+ * <li>{@code spawnproof.output}: the results folder; {@code spawnproof/} in the game's folder by default. A test run gives
+ * each of its games a folder of its own ({@code SPAWNPROOF_OUTPUT}), which comes first.
  * </ul>
  */
 public final class Settings {
@@ -36,7 +37,9 @@ public final class Settings {
 	}
 
 	static Path output() {
-		String dir = System.getProperty("spawnproof.output");
+		String dir = System.getenv("SPAWNPROOF_OUTPUT");
+		if (dir != null && !dir.isBlank()) return Path.of(dir).toAbsolutePath();
+		dir = System.getProperty("spawnproof.output");
 		if (dir != null && !dir.isBlank()) return Path.of(dir).toAbsolutePath();
 		return FabricLoader.getInstance().getGameDir().resolve("spawnproof").toAbsolutePath();
 	}

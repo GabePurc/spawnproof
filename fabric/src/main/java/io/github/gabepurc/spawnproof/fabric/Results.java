@@ -31,6 +31,7 @@ import java.util.stream.Stream;
  * <li>{@code report.txt}: the same for people: each test's sections, checks, notes and screenshots.
  * <li>{@code junit.xml}: for CI, one test case per check.
  * <li>{@code screenshots/<test>/}, {@code files/<test>/}: what the tests saved.
+ * <li>{@code parts/}, in a game that's one of a test run's: each test's results on their own, for the run to merge.
  * </ul>
  */
 final class Results {
@@ -44,6 +45,8 @@ final class Results {
 	private final long startTicks = Clock.ticks;
 	private long endTicks;
 	private final Selection selection;
+	/** One of a test run's games: each test's results are also written on their own (writePart). */
+	private final boolean parts;
 	private final List<TestRecord> tests = new ArrayList<>();
 	private final List<String> problems = new ArrayList<>();
 	private int notPicked;
@@ -51,20 +54,21 @@ final class Results {
 	private boolean finished;
 	private long endedAt;
 
-	private Results(Path dir, Selection selection) throws IOException {
+	private Results(Path dir, Selection selection, boolean parts) throws IOException {
 		this.dir = dir;
 		this.selection = selection;
+		this.parts = parts;
 		Files.createDirectories(dir);
 		// An earlier run's results would pass for this one's.
 		for (String name : List.of("events.jsonl", "results.json", "report.txt", "junit.xml")) Files.deleteIfExists(dir.resolve(name));
-		for (String sub : List.of("screenshots", "files")) deleteTree(dir.resolve(sub));
+		for (String sub : List.of("screenshots", "files", "parts")) deleteTree(dir.resolve(sub));
 		events = Files.newBufferedWriter(dir.resolve("events.jsonl"), StandardCharsets.UTF_8, StandardOpenOption.CREATE,
 			StandardOpenOption.TRUNCATE_EXISTING);
 	}
 
-	static Results open(Path dir, Selection selection) {
+	static Results open(Path dir, Selection selection, boolean parts) {
 		try {
-			return new Results(dir, selection);
+			return new Results(dir, selection, parts);
 		} catch (IOException e) {
 			throw new UncheckedIOException("Spawnproof couldn't make its results folder " + dir, e);
 		}
@@ -99,6 +103,46 @@ final class Results {
 
 	List<TestRecord> tests() {
 		return tests;
+	}
+
+	/** A test a test run handed this game. */
+	synchronized TestRecord add(Candidate test) {
+		TestRecord record = new TestRecord(test, this);
+		tests.add(record);
+		return record;
+	}
+
+	/** How this game runs, for a test run to put in its merged results. */
+	Map<String, Object> runInfo() {
+		Map<String, Object> m = new LinkedHashMap<>();
+		m.put("clock", Clock.FAST ? "frames" : "real");
+		m.put("clockName", Clock.name());
+		m.put("graphics", Settings.LOW_GRAPHICS ? "low" : "normal");
+		Map<String, Object> picked = new LinkedHashMap<>();
+		picked.put("tests", selection.include());
+		picked.put("skip", selection.exclude());
+		m.put("selection", picked);
+		m.put("game", game());
+		return m;
+	}
+
+	/**
+	 * One test's results on their own, for the test run to merge with the other games': the test as results.json has it,
+	 * its part of report.txt, and its test suite for junit.xml. Returns the file.
+	 */
+	synchronized Path writePart(TestRecord t) {
+		Map<String, Object> part = new LinkedHashMap<>();
+		part.put("result", t.toMap());
+		part.put("report", section(t));
+		part.put("junit", JUnitXml.suite(t).toMap());
+		Path file = dir.resolve("parts").resolve(tests.indexOf(t) + 1 + ".json");
+		try {
+			Files.createDirectories(file.getParent());
+		} catch (IOException e) {
+			Runner.say("couldn't make " + file.getParent() + ": " + e.getMessage());
+		}
+		write(dir.relativize(file).toString(), Json.write(part));
+		return file;
 	}
 
 	/** A problem with the run itself: no test picked, a name that picks none. */
@@ -136,6 +180,7 @@ final class Results {
 			if (running != null) {
 				running.problem(cutShort);
 				running.end();
+				if (parts) writePart(running);
 			}
 			for (TestRecord t : tests) {
 				if (t.status.equals(TestRecord.RUNNING) && t != running) t.notRun("the game stopped before it ran");
@@ -327,8 +372,15 @@ final class Results {
 		if (!selection.exclude().isEmpty()) out.append("Skipped: ").append(String.join(", ", selection.exclude())).append('\n');
 		if (notPicked > 0) out.append(plural(notPicked, "other test")).append(" not picked\n");
 		for (String p : problems) out.append("PROBLEM: ").append(p).append('\n');
-		for (TestRecord t : tests) {
-			out.append('\n').append("## ").append(t.test.name()).append(": ").append(t.status.toUpperCase(Locale.ROOT).replace('-', ' '));
+		for (TestRecord t : tests) out.append('\n').append(section(t));
+		return out.toString();
+	}
+
+	/** One test's part of report.txt: how it went, then its sections, checks, notes and screenshots in order. */
+	private static String section(TestRecord t) {
+		StringBuilder out = new StringBuilder();
+		synchronized (t) {
+			out.append("## ").append(t.test.name()).append(": ").append(t.status.toUpperCase(Locale.ROOT).replace('-', ' '));
 			if (!t.status.equals(TestRecord.NOT_RUN)) {
 				out.append(" (").append(duration(t.durationMs())).append(", ").append(t.ticks).append(" ticks");
 				if (t.failedChecks > 0) out.append(", ").append(t.failedChecks).append(" of ").append(t.checks.size()).append(" checks failed");
