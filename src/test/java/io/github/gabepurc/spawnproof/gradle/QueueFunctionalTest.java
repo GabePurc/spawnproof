@@ -2,6 +2,7 @@ package io.github.gabepurc.spawnproof.gradle;
 
 import io.github.gabepurc.spawnproof.Dirs;
 import io.github.gabepurc.spawnproof.cli.Main;
+import io.github.gabepurc.spawnproof.client.Client;
 import org.gradle.testkit.runner.BuildResult;
 import org.gradle.testkit.runner.GradleRunner;
 import org.junit.jupiter.api.AfterEach;
@@ -49,6 +50,10 @@ class QueueFunctionalTest {
 
 	/** A mod build whose runClientGameTest "game" notes when it ran, and on what display. */
 	private Path project(String name, boolean settingsPlugin) throws IOException {
+		return project(name, settingsPlugin, 2000, "");
+	}
+
+	private Path project(String name, boolean settingsPlugin, long gameMs, String taskLines) throws IOException {
 		Path dir = temp.resolve(name);
 		Files.createDirectories(dir.resolve("src/main/java"));
 		Files.writeString(dir.resolve("settings.gradle"),
@@ -62,13 +67,14 @@ class QueueFunctionalTest {
 			"\tclasspath = sourceSets.main.runtimeClasspath",
 			"\tmainClass = 'FakeGame'",
 			"\targs file('ran.txt').absolutePath",
+			taskLines,
 			"}",
 			""));
 		Files.writeString(dir.resolve("src/main/java/FakeGame.java"), String.join("\n",
 			"public class FakeGame {",
 			"\tpublic static void main(String[] args) throws Exception {",
 			"\t\tlong start = System.currentTimeMillis();",
-			"\t\tThread.sleep(2000);",
+			"\t\tThread.sleep(" + gameMs + ");",
 			"\t\tjava.nio.file.Files.writeString(java.nio.file.Path.of(args[0]), start + \" \" + System.currentTimeMillis() + \" \" + System.getenv(\"DISPLAY\"));",
 			"\t}",
 			"}",
@@ -151,6 +157,35 @@ class QueueFunctionalTest {
 		assertTrue(again.getOutput().contains("Reusing configuration cache"), again.getOutput());
 		assertTrue(Files.exists(a.resolve("ran.txt")));
 		assertEquals(2, history(2).size(), "both runs queued");
+	}
+
+	@Test
+	void waitingInLineDoesNotUseUpTheTimeout() throws Exception {
+		Path a = project("mod-a", true, 1000, "\ttimeout = java.time.Duration.ofSeconds(4)");
+		// Hold the only slot for 10 s: the task waits far longer than its whole 4 s timeout.
+		Thread holder = new Thread(() -> {
+			try (Client.Lease lease = Client.acquire(Map.of("project", "holder", "task", "hold", "hidden", false), m -> {})) {
+				Thread.sleep(10_000);
+			} catch (Exception e) {
+				throw new RuntimeException(e);
+			}
+		});
+		holder.start();
+		Thread.sleep(500);
+		BuildResult result = runner(a, Map.of(), "runClientGameTest", "--configuration-cache").build();
+		holder.join();
+		assertTrue(result.getOutput().contains("next in line"), result.getOutput());
+		assertTrue(Files.exists(a.resolve("ran.txt")), "the game ran to the end");
+	}
+
+	@Test
+	void theTimeoutStillStopsAGameThatRunsTooLong() throws Exception {
+		Path a = project("mod-a", true, 60_000, "\ttimeout = java.time.Duration.ofSeconds(3)");
+		long start = System.currentTimeMillis();
+		BuildResult result = runner(a, Map.of(), "runClientGameTest").buildAndFail();
+		assertTrue(System.currentTimeMillis() - start < 40_000, "stopped well before the game's 60 s");
+		assertTrue(result.getOutput().contains("ran past its timeout"), result.getOutput());
+		assertFalse(Files.exists(a.resolve("ran.txt")), "the game didn't finish");
 	}
 
 	@Test

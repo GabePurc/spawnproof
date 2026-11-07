@@ -21,6 +21,8 @@ display is Linux only for now.
 - **Playing comes first.** While you play (`runClient`, or any `play*` task), new test games wait until you close the game.
   Your game never waits.
 - **Games that need the machine to themselves** (performance runs, recordings) can ask to run alone.
+- **Timeouts count from when the game starts.** A test game task's own Gradle `timeout` is taken over and counted from
+  the moment its game starts, so waiting in line never uses it up.
 - **Nothing breaks without it.** On CI, or if the daemon can't be reached, games run directly as they always did.
 - **Crash-proof slots.** A game holds its slot by holding a connection to the daemon. If its build dies, the slot frees
   itself.
@@ -37,7 +39,9 @@ java -jar build/libs/spawnproof-0.1.0.jar install --init-script
 ```
 
 That puts a `spawnproof` command in `~/.local/bin` and an init script in `~/.gradle/init.d/` that applies the plugin to every
-Gradle build you run. Delete `~/.gradle/init.d/spawnproof.gradle` to stop.
+Gradle build you run. Delete `~/.gradle/init.d/spawnproof.gradle` to stop. To update, pull, build and run the same `install`
+again: the jar is copied under a name made from its contents, so running Gradle daemons load the new one, and the background
+service replaces itself once its games are done.
 
 Once it's published, a build can apply it itself, in `settings.gradle` (covers every project):
 

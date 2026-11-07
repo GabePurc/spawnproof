@@ -8,18 +8,21 @@ import org.gradle.api.initialization.Settings;
 import org.gradle.api.invocation.Gradle;
 import org.gradle.api.plugins.ExtraPropertiesExtension;
 import org.gradle.api.plugins.PluginAware;
+import org.gradle.api.provider.Property;
 import org.gradle.api.provider.Provider;
 import org.gradle.api.provider.ProviderFactory;
 import org.gradle.api.tasks.JavaExec;
 import org.gradle.build.event.BuildEventsListenerRegistry;
 
 import javax.inject.Inject;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Applied in settings.gradle (every project), a build script (that project) or an init script (every build on the machine).
@@ -70,6 +73,18 @@ public abstract class SpawnproofPlugin implements Plugin<PluginAware> {
 		String projectName = project.getRootProject().getName();
 		String rootDir = project.getRootDir().getAbsolutePath();
 		Map<String, Provider<String>> found = new ConcurrentHashMap<>();
+		List<Takeover> takeovers = new CopyOnWriteArrayList<>();
+		// A test game's Gradle timeout would start counting while it waits in line: Spawnproof takes it over and counts it
+		// from when the game starts (TimeLimit). Read once the graph is known, after the build has set its timeouts.
+		project.getGradle().getTaskGraph().whenReady(graph -> {
+			for (Takeover t : takeovers) {
+				if (!graph.hasTask(t.task()) || !Rules.TEST.equals(t.role().get())) continue;
+				Duration limit = t.task().getTimeout().getOrNull();
+				if (limit == null) continue;
+				t.limit().set(limit);
+				t.task().getTimeout().set((Duration) null);
+			}
+		});
 
 		project.getTasks().configureEach(task -> {
 			boolean productionRun = isProductionClientRun(task);
@@ -88,8 +103,11 @@ public abstract class SpawnproofPlugin implements Plugin<PluginAware> {
 			Provider<Boolean> hidden = providers.provider(() -> Rules.hidden(settings, ext, shared, flag(visible)));
 			found.put(name, role.zip(exclusive, (r, x) -> r + (Rules.TEST.equals(r) && x ? ", alone" : ""))
 				.zip(hidden, (r, h) -> r + (r.startsWith(Rules.TEST) ? h ? ", hidden" : ", visible" : "")));
+			Property<Duration> limit = project.getObjects().property(Duration.class);
+			takeovers.add(new Takeover(task, role, limit));
 			task.usesService(service);
-			task.doFirst(new AcquireAction(service, role, exclusive, hidden, projectName, rootDir));
+			task.doFirst(new AcquireAction(service, role, exclusive, hidden, limit, projectName, rootDir));
+			task.doLast(new TimeLimit.Stop(service));
 			if (productionRun && Dirs.isLinux()) {
 				HiddenLauncher.install(task, project, role.zip(hidden, (r, h) -> h && Rules.TEST.equals(r)));
 			}
@@ -119,6 +137,8 @@ public abstract class SpawnproofPlugin implements Plugin<PluginAware> {
 			}
 		}
 	}
+
+	private record Takeover(Task task, Provider<String> role, Property<Duration> limit) {}
 
 	/** -Pspawnproof.off, -Pspawnproof.visible: present and not "false". */
 	private static boolean flag(Provider<String> property) {

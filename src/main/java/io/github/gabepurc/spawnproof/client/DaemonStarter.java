@@ -8,6 +8,9 @@ import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -43,10 +46,10 @@ public final class DaemonStarter {
 	}
 
 	/**
-	 * Where the daemon's classes are: a copy of this jar in the state folder, or the classes folder itself when running from
-	 * one (tests, an included build).
+	 * Where the daemon's classes are: a copy of this jar in the state folder, named by its contents, or the classes folder
+	 * itself when running from one (tests, an included build).
 	 */
-	public static Path classpath() throws IOException {
+	public static synchronized Path classpath() throws IOException {
 		Path source;
 		try {
 			source = Path.of(DaemonStarter.class.getProtectionDomain().getCodeSource().getLocation().toURI());
@@ -57,13 +60,33 @@ public final class DaemonStarter {
 		return installedJar(source);
 	}
 
+	/**
+	 * Which build of Spawnproof this is: the copy's name (spawnproof-0.1.0-1a2b3c4d.jar), or "classes" from a folder. A daemon
+	 * of another build is replaced once it's idle, so a rebuilt jar takes over even with the same version.
+	 */
+	public static String buildId() {
+		try {
+			return classpath().getFileName().toString();
+		} catch (IOException e) {
+			return "unknown";
+		}
+	}
+
+	/**
+	 * The copy is named by a hash of its contents: Gradle keeps the classes of an init script's jar loaded by path, so an
+	 * updated jar must get a new path for Gradle to load it.
+	 */
 	static Path installedJar(Path source) throws IOException {
 		Path lib = Dirs.state().resolve("lib");
 		Files.createDirectories(lib);
-		Path target = lib.resolve("spawnproof-" + Version.VERSION + ".jar");
-		boolean same = Files.isRegularFile(target) && Files.size(target) == Files.size(source)
-			&& !Files.getLastModifiedTime(source).toInstant().isAfter(Files.getLastModifiedTime(target).toInstant());
-		if (!same) {
+		String hash;
+		try {
+			hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(source))).substring(0, 8);
+		} catch (NoSuchAlgorithmException e) {
+			throw new IOException(e);
+		}
+		Path target = lib.resolve("spawnproof-" + Version.VERSION + "-" + hash + ".jar");
+		if (!Files.isRegularFile(target)) {
 			Path temp = Files.createTempFile(lib, "spawnproof-", ".jar.tmp");
 			Files.copy(source, temp, StandardCopyOption.REPLACE_EXISTING);
 			Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);

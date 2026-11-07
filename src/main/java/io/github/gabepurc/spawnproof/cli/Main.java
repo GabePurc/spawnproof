@@ -211,6 +211,13 @@ public final class Main {
 	private static int install(List<String> args, PrintStream out) throws IOException {
 		Path jar = DaemonStarter.classpath();
 		if (Files.isDirectory(jar)) throw new IOException("install runs from Spawnproof's jar (java -jar spawnproof.jar install)");
+		// Earlier copies: the command and the init script move to this one.
+		try (var others = Files.list(jar.getParent())) {
+			for (Path old : (Iterable<Path>) others::iterator) {
+				String name = old.getFileName().toString();
+				if (name.startsWith("spawnproof-") && name.endsWith(".jar") && !old.equals(jar)) Files.deleteIfExists(old);
+			}
+		}
 		if (Dirs.isWindows()) {
 			out.println("On Windows, run it as: java -jar " + jar + " <command>");
 		} else {

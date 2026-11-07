@@ -21,12 +21,19 @@ public final class Client {
 	public static final class Connection implements Closeable {
 		final Wire wire;
 		public final String version;
+		public final String build;
 		public final long protocol;
 
 		Connection(Wire wire, Map<String, Object> welcome) {
 			this.wire = wire;
 			this.version = Json.str(welcome, "version");
+			this.build = Json.str(welcome, "build");
 			this.protocol = Json.num(welcome, "protocol", -1);
+		}
+
+		/** The same version, and the same jar (a rebuild of one version is another build). */
+		boolean current() {
+			return Version.VERSION.equals(version) && (build == null || build.equals(DaemonStarter.buildId()));
 		}
 
 		@Override
@@ -147,7 +154,7 @@ public final class Client {
 		boolean told = false;
 		for (int attempt = 0; ; attempt++) {
 			Connection c = connect(true);
-			if (Version.VERSION.equals(c.version) || attempt >= 20) return c;
+			if (c.current() || attempt >= 20) return c;
 			Map<String, Object> status;
 			try (c) {
 				status = call(c, Map.of("type", "status"));

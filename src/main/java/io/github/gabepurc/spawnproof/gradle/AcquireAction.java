@@ -7,6 +7,7 @@ import org.gradle.api.provider.Provider;
 import org.gradle.api.tasks.JavaExec;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -16,15 +17,17 @@ final class AcquireAction implements Action<Task> {
 	private final Provider<String> role;
 	private final Provider<Boolean> exclusive;
 	private final Provider<Boolean> hidden;
+	private final Provider<Duration> limit;
 	private final String project;
 	private final String dir;
 
-	AcquireAction(Provider<LeaseService> service, Provider<String> role, Provider<Boolean> exclusive, Provider<Boolean> hidden, String project,
-		String dir) {
+	AcquireAction(Provider<LeaseService> service, Provider<String> role, Provider<Boolean> exclusive, Provider<Boolean> hidden,
+		Provider<Duration> limit, String project, String dir) {
 		this.service = service;
 		this.role = role;
 		this.exclusive = exclusive;
 		this.hidden = hidden;
+		this.limit = limit;
 		this.project = project;
 		this.dir = dir;
 	}
@@ -38,6 +41,7 @@ final class AcquireAction implements Action<Task> {
 			// Inside `spawnproof run`, which already holds a slot (and the display) for the whole command.
 			String display = System.getenv("SPAWNPROOF_DISPLAY");
 			if (hide && display != null) useDisplay(task, display);
+			startClock(task);
 			return;
 		}
 		Map<String, Object> request = new LinkedHashMap<>();
@@ -52,6 +56,13 @@ final class AcquireAction implements Action<Task> {
 		request.put("pid", ProcessHandle.current().pid());
 		String display = service.get().acquire(task, request, hide);
 		if (hide && display != null) useDisplay(task, display);
+		startClock(task);
+	}
+
+	/** The task's own timeout, taken over by the plugin, starts now that the game does. */
+	private void startClock(Task task) {
+		Duration d = limit.getOrNull();
+		if (d != null) service.get().timeLimit().start(task, d);
 	}
 
 	/** Production runs can't take an environment; HiddenLauncher's wrapper reads the display for them. */

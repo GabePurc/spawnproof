@@ -22,6 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public abstract class LeaseService implements BuildService<BuildServiceParameters.None>, OperationCompletionListener, AutoCloseable {
 	private final Map<String, Client.Lease> leases = new ConcurrentHashMap<>();
+	private final TimeLimit timeLimit = new TimeLimit();
 	private volatile boolean warnedUnavailable;
 	private volatile boolean warnedNoDisplay;
 
@@ -52,16 +53,23 @@ public abstract class LeaseService implements BuildService<BuildServiceParameter
 		}
 	}
 
+	TimeLimit timeLimit() {
+		return timeLimit;
+	}
+
 	@Override
 	public void onFinish(FinishEvent event) {
 		if (event instanceof TaskFinishEvent finished) {
-			Client.Lease lease = leases.remove(finished.getDescriptor().getTaskPath());
+			String path = finished.getDescriptor().getTaskPath();
+			timeLimit.stop(path);
+			Client.Lease lease = leases.remove(path);
 			if (lease != null) lease.close();
 		}
 	}
 
 	@Override
 	public void close() {
+		timeLimit.close();
 		leases.values().forEach(Client.Lease::close);
 		leases.clear();
 	}

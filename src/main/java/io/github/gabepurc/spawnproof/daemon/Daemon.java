@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class Daemon {
 	private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+	private static final String BUILD = io.github.gabepurc.spawnproof.client.DaemonStarter.buildId();
 	private final Path socket = Dirs.socket();
 	private final DaemonConfig config = DaemonConfig.load(Dirs.configFile());
 	private final History history;
@@ -90,7 +91,7 @@ public final class Daemon {
 		Thread keeper = new Thread(this::housekeeping, "spawnproof-housekeeping");
 		keeper.setDaemon(true);
 		keeper.start();
-		log("Spawnproof " + Version.VERSION + " listening on " + socket + " (pid " + ProcessHandle.current().pid() + ", " + config.slots
+		log("Spawnproof " + Version.VERSION + " (" + BUILD + ") listening on " + socket + " (pid " + ProcessHandle.current().pid() + ", " + config.slots
 			+ " slots, display " + config.display + ")");
 		while (!stopping) {
 			SocketChannel channel;
@@ -152,7 +153,8 @@ public final class Daemon {
 	private void handle(Wire wire) {
 		connections.incrementAndGet();
 		try {
-			wire.send(Map.of("type", "welcome", "version", Version.VERSION, "protocol", Wire.PROTOCOL, "pid", ProcessHandle.current().pid()));
+			wire.send(Map.of("type", "welcome", "version", Version.VERSION, "build", BUILD, "protocol", Wire.PROTOCOL, "pid",
+				ProcessHandle.current().pid()));
 			Map<String, Object> request = wire.read();
 			if (request == null) return;
 			String type = String.valueOf(request.get("type"));
@@ -262,6 +264,7 @@ public final class Daemon {
 		Map<String, Object> s = new LinkedHashMap<>();
 		s.put("type", "status");
 		s.put("version", Version.VERSION);
+		s.put("build", BUILD);
 		s.put("protocol", Wire.PROTOCOL);
 		s.put("pid", ProcessHandle.current().pid());
 		s.put("startedAt", startedAt);
