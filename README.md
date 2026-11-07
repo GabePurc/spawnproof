@@ -7,8 +7,13 @@ it runs them on a hidden display, so they don't pop up on your desktop.
 It's made for mod developers who run several builds at once: a few worktrees, a few AI coding sessions, or just you and a
 test run. Each build used to start its games whenever it liked. With Spawnproof, they take turns.
 
-Version 0.1. Works with Fabric Loom and NeoForge ModDevGradle builds. The queue works anywhere Java 17 runs; the hidden
-display is Linux only for now.
+Version 0.2, in progress. Works with Fabric Loom and NeoForge ModDevGradle builds. The queue works anywhere Java 17 runs;
+the hidden display is Linux only for now.
+
+Spawnproof is growing into a test framework for Minecraft mods. Its first piece is [Spawnproof for Fabric](fabric/README.md):
+a library a mod's client game tests are written with. It records named checks, runs each test on its own, and writes
+results for people (`report.txt`), programs (`results.json`) and CI (`junit.xml`). It also runs test games several times
+faster than normal on a clock that counts drawn frames.
 
 ## What it does
 
@@ -35,7 +40,7 @@ Spawnproof isn't on the Gradle Plugin Portal yet. Until it is, build it and inst
 git clone https://github.com/GabePurc/spawnproof.git
 cd spawnproof
 ./gradlew build
-java -jar build/libs/spawnproof-0.1.0.jar install --init-script
+java -jar build/libs/spawnproof-0.2.0-SNAPSHOT.jar install --init-script
 ```
 
 That puts a `spawnproof` command in `~/.local/bin` and an init script in `~/.gradle/init.d/` that applies the plugin to every
@@ -158,8 +163,9 @@ Settings live in `~/.config/spawnproof/config.properties`; logs and history (one
 ./gradlew build
 ```
 
-The tests start real daemons and real Gradle builds in temporary folders (`SPAWNPROOF_HOME`), apart from your machine's own
-queue.
+That builds the Gradle plugin (`build/libs/`) and Spawnproof for Fabric (`fabric/build/libs/`), which needs JDK 25 for
+Minecraft 26.x: an installed one is found, or Gradle downloads one. The plugin's tests start real daemons and real Gradle
+builds in temporary folders (`SPAWNPROOF_HOME`), apart from your machine's own queue.
 
 ## License
 

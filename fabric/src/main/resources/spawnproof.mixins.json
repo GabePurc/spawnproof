@@ -1,0 +1,19 @@
+{
+	"required": true,
+	"package": "io.github.gabepurc.spawnproof.fabric.mixin",
+	"plugin": "io.github.gabepurc.spawnproof.fabric.mixin.TestRunsOnly",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"BlockableEventLoopMixin",
+		"FramerateLimitTrackerMixin",
+		"MinecraftMixin",
+		"MinecraftServerMixin",
+		"MouseHandlerMixin",
+		"OptionsMixin",
+		"RenderSystemMixin",
+		"UtilAccessor"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

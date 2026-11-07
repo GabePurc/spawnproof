@@ -1,0 +1,22 @@
+{
+	"schemaVersion": 1,
+	"id": "spawnproof-selftest",
+	"version": "1.0.0",
+	"name": "Spawnproof self-test",
+	"description": "Spawnproof's tests of its own runner: one that passes, and some that fail, throw or leave a world open on purpose.",
+	"environment": "*",
+	"entrypoints": {
+		"spawnproof": [
+			"io.github.gabepurc.spawnproof.selftest.ExampleTest",
+			"io.github.gabepurc.spawnproof.selftest.FailingTest",
+			"io.github.gabepurc.spawnproof.selftest.ThrowingTest",
+			"io.github.gabepurc.spawnproof.selftest.LeavesWorldOpenTest"
+		],
+		"fabric-client-gametest": [
+			"io.github.gabepurc.spawnproof.selftest.PlainFabricTest"
+		]
+	},
+	"depends": {
+		"spawnproof": "*"
+	}
+}
