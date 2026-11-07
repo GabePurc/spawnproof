@@ -1,0 +1,90 @@
+name: Release
+
+# Publishing a GitHub release tagged vX.Y.Z puts that version out: each loader's library on Maven Central (Spawnproof for
+# Fabric so far), the Gradle plugin on the Gradle Plugin Portal, and the jar the command installs from on the release itself. The tag has to be on a commit
+# whose gradle.properties says X.Y.Z-SNAPSHOT, so a release is always the version main was working towards.
+#
+# Each place is its own job: if one fails, "Re-run failed jobs" retries only that one. Maven Central keeps every release for
+# good, so a version that reached it can't be published there again.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tags look like v0.2.0, but this one is $TAG. Delete the release and tag it again."
+            exit 1
+          fi
+          version="${TAG#v}"
+          planned="$(sed -n 's/^version=//p' gradle.properties)"
+          if [ "$planned" != "$version-SNAPSHOT" ]; then
+            echo "::error::This release is $version, but gradle.properties at $TAG says $planned. Tag the release v${planned%-SNAPSHOT}, or change gradle.properties in a PR first."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  maven-central:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@v4
+      # Uploads, then waits while Central checks it (signatures, POM, javadoc); a rejection fails this step with Central's reason.
+      - run: ./gradlew -Pversion=${{ needs.version.outputs.version }} publishAggregationToCentralPortal
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+
+  plugin-portal:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew -Pversion=${{ needs.version.outputs.version }} publishPlugins
+        env:
+          GRADLE_PUBLISH_KEY: ${{ secrets.GRADLE_PUBLISH_KEY }}
+          GRADLE_PUBLISH_SECRET: ${{ secrets.GRADLE_PUBLISH_SECRET }}
+
+  jar:
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew -Pversion=${{ needs.version.outputs.version }} jar
+      - run: gh release upload "$TAG" "build/libs/spawnproof-$VERSION.jar" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          VERSION: ${{ needs.version.outputs.version }}

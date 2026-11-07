@@ -1,16 +1,21 @@
 plugins {
 	`java-gradle-plugin`
-	id("com.gradle.plugin-publish") version "1.3.1"
+	id("com.gradle.plugin-publish") version "2.2.1"
+	id("com.gradleup.nmcp.aggregation") version "1.6.2"
 }
 
+// The version is in gradle.properties.
 group = "io.github.gabepurc"
-version = "0.2.0-SNAPSHOT"
 
 repositories {
 	mavenCentral()
 }
 
 dependencies {
+	// Each loader's library goes to Maven Central (spawnproof-fabric so far; a NeoForge or Forge one is added here too).
+	// This plugin goes to the Gradle Plugin Portal instead.
+	nmcpAggregation(project(":fabric"))
+
 	testImplementation(platform("org.junit:junit-bom:5.11.4"))
 	testImplementation("org.junit.jupiter:junit-jupiter")
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
@@ -69,6 +74,16 @@ gradlePlugin {
 			description = "Queues Minecraft test games across every build on the machine, so they never overlap, and runs them on a hidden display."
 			tags = listOf("minecraft", "fabric", "neoforge", "testing", "queue")
 		}
+	}
+}
+
+// ./gradlew publishAggregationToCentralPortal, run by the release workflow with the Central Portal token it keeps as secrets.
+// The release goes out as soon as Central has checked it: nothing waits to be pressed in the Portal.
+nmcpAggregation {
+	centralPortal {
+		username = providers.environmentVariable("CENTRAL_USERNAME")
+		password = providers.environmentVariable("CENTRAL_PASSWORD")
+		publishingType = "AUTOMATIC"
 	}
 }
 
