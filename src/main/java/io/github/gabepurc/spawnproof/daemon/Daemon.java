@@ -28,7 +28,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * The one process per user that hands out game slots and keeps the hidden display. Clients start it when they find none
- * (see Client); a lock file makes sure only one survives if two start at once. It exits after a while with nothing to do.
+ * (see Client); a lock file makes sure only one survives if two start at once, or while an old one is on its way out. It
+ * exits after a while with nothing to do.
  *
  * <p>A game holds its slot by holding its connection: if its build dies, the connection closes and the slot frees itself.
  */
@@ -61,12 +62,35 @@ public final class Daemon {
 		Path state = Dirs.state();
 		Files.createDirectories(state);
 		try (FileChannel lockFile = FileChannel.open(state.resolve("daemon.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
-			FileLock lock = lockFile.tryLock();
+			FileLock lock = takeLock(lockFile);
 			if (lock == null) {
 				log("another daemon is running; this one exits");
 				return;
 			}
 			new Daemon(state).serve();
+		}
+	}
+
+	/**
+	 * The lock that keeps one daemon running. Its holder may be a daemon that's running, which this one isn't needed beside,
+	 * or one on its way out: replaced by a newer Spawnproof, it stops answering, then closes its hidden display before it
+	 * lets go. That one is waited for. Null if another daemon has it.
+	 */
+	private static FileLock takeLock(FileChannel file) throws IOException, InterruptedException {
+		long deadline = System.currentTimeMillis() + 30_000;
+		while (true) {
+			FileLock lock = file.tryLock();
+			if (lock != null) return lock;
+			if (answers(Dirs.socket()) || System.currentTimeMillis() > deadline) return null;
+			Thread.sleep(100);
+		}
+	}
+
+	private static boolean answers(Path socket) {
+		try (Wire wire = Wire.connect(socket)) {
+			return true;
+		} catch (IOException e) {
+			return false;
 		}
 	}
 
