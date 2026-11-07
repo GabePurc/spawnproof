@@ -1,0 +1,35 @@
+# A PR into main must close an issue (AGENTS.md, firm rules). Separate from the build, so that fixing a PR's description
+# checks again in seconds without another build. Outside contributors' PRs from forks are exempt.
+name: linked-issue
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  issues: read
+  pull-requests: read
+
+jobs:
+  linked-issue:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: The PR closes an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          count=$(gh api graphql -F owner="$OWNER" -F repo="$REPO" -F pr="$PR" -f query='
+            query($owner: String!, $repo: String!, $pr: Int!) {
+              repository(owner: $owner, name: $repo) {
+                pullRequest(number: $pr) { closingIssuesReferences(first: 1) { totalCount } }
+              }
+            }' --jq '.data.repository.pullRequest.closingIssuesReferences.totalCount')
+          if [ "$count" -eq 0 ]; then
+            echo "::error::Add 'Closes #<issue>' to the PR description."
+            exit 1
+          fi
+          echo "Closes $count issue(s)."
