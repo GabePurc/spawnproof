@@ -7,7 +7,7 @@ it runs them on a hidden display, so they don't pop up on your desktop.
 It's made for mod developers who run several builds at once: a few worktrees, a few AI coding sessions, or just you and a
 test run. Each build used to start its games whenever it liked. With Spawnproof, they take turns.
 
-Version 0.2. Works with Fabric Loom and NeoForge ModDevGradle builds. The queue works anywhere Java 17 runs;
+Version 0.3. Works with Fabric Loom and NeoForge ModDevGradle builds. The queue works anywhere Java 17 runs;
 the hidden display is Linux only for now.
 
 Spawnproof is growing into a test framework for Minecraft mods. Its first piece is [Spawnproof for Fabric](fabric/README.md):
@@ -33,15 +33,15 @@ faster than normal on a clock that counts drawn frames.
   itself.
 - **A mod's tests across several games.** `spawnproof test` shares a mod's client game tests out between several games at
   once, the longest first by past runs, and merges their results into one set. `--only-failures` reruns what failed last
-  time. (New in 0.3, not released yet.)
+  time.
 
 ## Setup
 
-Download `spawnproof-0.2.0.jar` from the [latest release](https://github.com/GabePurc/spawnproof/releases/latest) and install
+Download `spawnproof-0.3.0.jar` from the [latest release](https://github.com/GabePurc/spawnproof/releases/latest) and install
 it for every build on your machine:
 
 ```bash
-java -jar spawnproof-0.2.0.jar install --init-script
+java -jar spawnproof-0.3.0.jar install --init-script
 ```
 
 That puts a `spawnproof` command in `~/.local/bin` and an init script in `~/.gradle/init.d/` that applies the plugin to every
@@ -53,7 +53,7 @@ Or a build can apply it itself, from the Gradle Plugin Portal, in `settings.grad
 
 ```groovy
 plugins {
-	id 'io.github.gabepurc.spawnproof' version '0.2.0'
+	id 'io.github.gabepurc.spawnproof' version '0.3.0'
 }
 ```
 
@@ -112,7 +112,7 @@ For one build: `-Pspawnproof.exclusive` (run this build's games alone), `-Pspawn
 
 ## Running a mod's tests: spawnproof test
 
-New in 0.3, not released yet: build a clone to try it. In a mod's folder:
+In a mod's folder:
 
 ```bash
 spawnproof test                       # every test, across as many games as the queue has slots
