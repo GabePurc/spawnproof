@@ -61,8 +61,20 @@ final class HiddenLauncher implements JavaLauncher {
 	@Override
 	@Internal
 	public RegularFile getExecutablePath() {
-		File wrapper = wrapperFor(delegate.getExecutablePath().getAsFile().toPath()).toFile();
-		return () -> wrapper;
+		return new WrapperFile(wrapperFor(delegate.getExecutablePath().getAsFile().toPath()).toFile());
+	}
+
+	/** Loom hands this to Gradle's commandLine, which reads it with toString: so that must be the path. */
+	record WrapperFile(File file) implements RegularFile {
+		@Override
+		public File getAsFile() {
+			return file;
+		}
+
+		@Override
+		public String toString() {
+			return file.getAbsolutePath();
+		}
 	}
 
 	static Path wrapperFor(Path realJava) {

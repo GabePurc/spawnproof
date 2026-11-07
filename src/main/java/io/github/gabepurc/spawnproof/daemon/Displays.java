@@ -100,7 +100,10 @@ final class Displays {
 
 	/** Called on a settings change: an idle display closes now so the next game gets the new kind or size. */
 	synchronized void restartWhenIdle(boolean inUse) {
-		if (!inUse && process != null) stopLocked();
+		if (!inUse && process != null) {
+			stopLocked();
+			note = "starts with the next hidden game";
+		}
 	}
 
 	synchronized void stop() {

@@ -16,7 +16,7 @@ display is Linux only for now.
   game waits for a slot just before it starts, and gives it back when it closes. Compiling and building jars don't wait,
   only the games do.
 - **Hidden games.** Test games draw on a hidden display: [weston](https://wayland.pages.freedesktop.org/weston/) running
-  headless, which can use your GPU, or Xvfb, which draws in software. Production runs (Loom's `ClientProductionRunTask`)
+  headless, which draws on your GPU at full speed (tried on an NVIDIA card), or Xvfb, which draws in software. Production runs (Loom's `ClientProductionRunTask`)
   are hidden too.
 - **Playing comes first.** While you play (`runClient`, or any `play*` task), new test games wait until you close the game.
   Your game never waits.
@@ -115,20 +115,20 @@ In a build with the plugin, `./gradlew spawnproofStatus`, `spawnproofPause` and 
 `status` looks like this:
 
 ```text
-Spawnproof 0.1.0 · 2 slots · hidden display :1 (weston, AMD Radeon Graphics (radeonsi, ...))
+Spawnproof 0.1.0 · 2 slots · hidden display :2 (weston, NVIDIA GeForce RTX 3060 Ti/PCIe/SSE2)
 
 Running
-  #12 Horsing Around :26.3:runClientGameTestRideA (100-hats), 4m 12s, about 2m 30s left, hidden on :1
-  #13 Horsing Around :26.3:runClientGameTestTerrain (main), 1m 03s, hidden on :1
+  #12 horsing-around :26.3:runClientGameTestRideA (100-hats), 4m 12s, about 2m 30s left, hidden on :2
+  #13 horsing-around :26.3:runClientGameTestTerrain (main), 1m 03s, hidden on :2
 
 Waiting: all 2 game slots are busy
-   1. #14 Horsing Around :26.3:runSmoke (108-real-camera), 40s waiting
+   1. #14 horsing-around :26.3:runSmoke (108-real-camera), 40s waiting
 ```
 
 A waiting build says so in its own output too:
 
 ```text
-Spawnproof: :26.3:runSmoke is next in line: all 2 game slots are busy. Running: Horsing Around :26.3:runClientGameTestRideA (100-hats), ...
+Spawnproof: :26.3:runSmoke is next in line: all 2 game slots are busy. Running: horsing-around :26.3:runClientGameTestRideA (100-hats), ...
 ```
 
 `SPAWNPROOF_LABEL` names a build in `status` instead of its branch, which helps tell several AI sessions apart.
