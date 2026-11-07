@@ -4,6 +4,8 @@
 plugins {
 	id("net.fabricmc.fabric-loom") version "1.18.4"
 	`maven-publish`
+	signing
+	id("com.gradleup.nmcp") // (Its version is the root project's, which uploads this to Maven Central.)
 }
 
 group = "io.github.gabepurc"
@@ -38,6 +40,14 @@ tasks.test {
 java {
 	toolchain.languageVersion = JavaLanguageVersion.of(25)
 	withSourcesJar()
+	withJavadocJar()
+}
+
+// Maven Central wants javadoc with every jar. It covers the test API, the part mods write against, so IDEs show its
+// comments; the rest is internal.
+tasks.javadoc {
+	include("io/github/gabepurc/spawnproof/test/**")
+	(options as StandardJavadocDocletOptions).addStringOption("Xdoclint:none", "-quiet")
 }
 
 tasks.withType<JavaCompile>().configureEach {
@@ -71,11 +81,52 @@ tasks.matching { it.name == "runClientGameTest" }.configureEach {
 	gameProperties.forEach { (name, value) -> exec.systemProperty(name, value) }
 }
 
+// io.github.gabepurc:spawnproof-fabric, released to Maven Central by the release workflow. publishToMavenLocal puts a
+// snapshot in Maven Local, for trying changes in a mod's build.
 publishing {
 	publications {
 		create<MavenPublication>("fabric") {
 			artifactId = "spawnproof-fabric"
 			from(components["java"])
+			// Maven Central turns a release away without all of these.
+			pom {
+				name = "Spawnproof for Fabric"
+				description = "Client game tests for Fabric mods: a test API and runner that reports every check, with test " +
+					"games that run faster than real time."
+				url = "https://github.com/GabePurc/spawnproof"
+				licenses {
+					license {
+						name = "MIT License"
+						url = "https://github.com/GabePurc/spawnproof/blob/main/LICENSE"
+					}
+				}
+				developers {
+					developer {
+						id = "GabePurc"
+						name = "Gabe Purcell"
+						url = "https://github.com/GabePurc"
+					}
+				}
+				scm {
+					url = "https://github.com/GabePurc/spawnproof"
+					connection = "scm:git:https://github.com/GabePurc/spawnproof.git"
+					developerConnection = "scm:git:ssh://git@github.com/GabePurc/spawnproof.git"
+				}
+				issueManagement {
+					system = "GitHub"
+					url = "https://github.com/GabePurc/spawnproof/issues"
+				}
+			}
 		}
 	}
+}
+
+// Maven Central takes only signed releases. The release workflow passes the key; a snapshot built without it goes unsigned.
+val signingKey = providers.environmentVariable("SIGNING_KEY")
+signing {
+	isRequired = !version.toString().endsWith("-SNAPSHOT")
+	if (signingKey.isPresent) {
+		useInMemoryPgpKeys(signingKey.get(), providers.environmentVariable("SIGNING_PASSWORD").orNull)
+	}
+	sign(publishing.publications["fabric"])
 }

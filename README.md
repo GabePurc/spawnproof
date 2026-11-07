@@ -7,7 +7,7 @@ it runs them on a hidden display, so they don't pop up on your desktop.
 It's made for mod developers who run several builds at once: a few worktrees, a few AI coding sessions, or just you and a
 test run. Each build used to start its games whenever it liked. With Spawnproof, they take turns.
 
-Version 0.2, in progress. Works with Fabric Loom and NeoForge ModDevGradle builds. The queue works anywhere Java 17 runs;
+Version 0.2. Works with Fabric Loom and NeoForge ModDevGradle builds. The queue works anywhere Java 17 runs;
 the hidden display is Linux only for now.
 
 Spawnproof is growing into a test framework for Minecraft mods. Its first piece is [Spawnproof for Fabric](fabric/README.md):
@@ -34,27 +34,28 @@ faster than normal on a clock that counts drawn frames.
 
 ## Setup
 
-Spawnproof isn't on the Gradle Plugin Portal yet. Until it is, build it and install it for every build on your machine:
+Download `spawnproof-0.2.0.jar` from the [latest release](https://github.com/GabePurc/spawnproof/releases/latest) and install
+it for every build on your machine:
 
 ```bash
-git clone https://github.com/GabePurc/spawnproof.git
-cd spawnproof
-./gradlew build
-java -jar build/libs/spawnproof-0.2.0-SNAPSHOT.jar install --init-script
+java -jar spawnproof-0.2.0.jar install --init-script
 ```
 
 That puts a `spawnproof` command in `~/.local/bin` and an init script in `~/.gradle/init.d/` that applies the plugin to every
-Gradle build you run. Delete `~/.gradle/init.d/spawnproof.gradle` to stop. To update, pull, build and run the same `install`
-again: the jar is copied under a name made from its contents, so running Gradle daemons load the new one, and the background
+Gradle build you run. Delete `~/.gradle/init.d/spawnproof.gradle` to stop. To update, run the same `install` with the new
+jar: it's copied under a name made from its contents, so running Gradle daemons load the new one, and the background
 service replaces itself once its games are done.
 
-Once it's published, a build can apply it itself, in `settings.gradle` (covers every project):
+Or a build can apply it itself, from the Gradle Plugin Portal, in `settings.gradle` (covers every project):
 
 ```groovy
 plugins {
-	id 'io.github.gabepurc.spawnproof' version '0.1.0'
+	id 'io.github.gabepurc.spawnproof' version '0.2.0'
 }
 ```
+
+To run changes that aren't released yet, build a clone (`./gradlew build`) and install
+`build/libs/spawnproof-0.2.0-SNAPSHOT.jar` the same way.
 
 ### The hidden display (Linux)
 
