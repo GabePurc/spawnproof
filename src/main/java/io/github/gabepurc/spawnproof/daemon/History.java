@@ -14,29 +14,66 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
-/** Every game that ran, one JSON line each: for "about 3 minutes left" and for looking back. Null file keeps it in memory. */
+/**
+ * Every game that ran, one JSON line each: for "about 3 minutes left" and for looking back. Null file keeps it in memory.
+ *
+ * <p>It also hands out the games' ids, which go on from one daemon to the next: an id names one game in {@code status}, the
+ * daemon's log and the history, so it mustn't come round again after a restart. The last id handed out is kept beside the
+ * history, since a game that leaves the line without running never reaches the history itself.
+ */
 public final class History {
 	private static final int KEEP = 500;
 	private final Path file;
+	private final Path lastIdFile;
 	private final ArrayDeque<Map<String, Object>> recent = new ArrayDeque<>();
+	private long lastId;
 
 	public History(Path file) {
 		this.file = file;
-		if (file == null || !Files.isRegularFile(file)) return;
+		this.lastIdFile = file == null ? null : file.resolveSibling("last-game-id");
+		if (file == null) return;
+		lastId = readLastId();
+		if (!Files.isRegularFile(file)) return;
 		try {
 			List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
 			int from = Math.max(0, lines.size() - KEEP);
-			for (String line : lines.subList(from, lines.size())) {
+			for (int i = 0; i < lines.size(); i++) {
+				Map<String, Object> entry;
 				try {
-					recent.addLast(Json.parseObject(line));
+					entry = Json.parseObject(lines.get(i));
 				} catch (IllegalArgumentException ignored) {
-					// A line cut short by a crash.
+					continue; // A line cut short by a crash.
 				}
+				// Every line counts for the ids, kept or not: a history from before ids carried over numbers its games from 1
+				// again after each restart, so the highest may be anywhere in it.
+				lastId = Math.max(lastId, Json.num(entry, "id", 0));
+				if (i >= from) recent.addLast(entry);
 			}
 			if (lines.size() > 4 * KEEP) Files.write(file, lines.subList(from, lines.size()), StandardCharsets.UTF_8);
 		} catch (IOException ignored) {
 			// History is a nicety; start without it.
 		}
+	}
+
+	private long readLastId() {
+		try {
+			return Files.isRegularFile(lastIdFile) ? Long.parseLong(Files.readString(lastIdFile, StandardCharsets.UTF_8).trim()) : 0;
+		} catch (IOException | NumberFormatException e) {
+			return 0; // The history's own ids are still gone by.
+		}
+	}
+
+	/** The id for the next game: one more than any this daemon or an earlier one has handed out. */
+	synchronized long nextId() {
+		lastId++;
+		if (lastIdFile != null) {
+			try {
+				Files.writeString(lastIdFile, lastId + "\n", StandardCharsets.UTF_8);
+			} catch (IOException ignored) {
+				// The history's ids still carry most of it over.
+			}
+		}
+		return lastId;
 	}
 
 	synchronized void record(Lease lease, long endedAt) {
