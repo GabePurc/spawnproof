@@ -16,6 +16,7 @@ public final class Scheduler {
 	private final List<Lease> waiting = new ArrayList<>();
 	private final List<Lease> running = new ArrayList<>();
 	private final List<Lease> playing = new ArrayList<>();
+	/** Hands out ids when there's no history to go on from (tests). */
 	private long nextId = 1;
 	private int slots;
 	private boolean holdWhilePlaying;
@@ -32,7 +33,7 @@ public final class Scheduler {
 		List<Runnable> calls = new ArrayList<>();
 		Lease lease;
 		synchronized (this) {
-			lease = new Lease(nextId++, request, clock.getAsLong(), listener);
+			lease = new Lease(history != null ? history.nextId() : nextId++, request, clock.getAsLong(), listener);
 			if (request.play()) {
 				lease.startedAt = lease.queuedAt;
 				playing.add(lease);
