@@ -313,6 +313,12 @@ main {
 	color: var(--muted);
 }
 
+/* In a list, the pills are one width, so the titles beside them line up. */
+.row > .pill, .test > summary > .pill {
+	min-width: 72px;
+	text-align: center;
+}
+
 .pill.passed { background: var(--passed-bg); color: var(--passed); }
 .pill.failed { background: var(--failed-bg); color: var(--failed); }
 .pill.error, .pill.not-run { background: var(--error-bg); color: var(--error); }
