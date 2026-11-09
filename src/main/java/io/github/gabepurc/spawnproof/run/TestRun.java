@@ -408,6 +408,7 @@ public final class TestRun {
 			summaries);
 		try {
 			merged.write();
+			noteResults(out.resolve("results.json"));
 		} catch (IOException e) {
 			say("couldn't write the results in " + out + ": " + e.getMessage());
 		}
@@ -540,6 +541,20 @@ public final class TestRun {
 
 	void say(String line) {
 		console.println("[spawnproof] " + line);
+	}
+
+	/**
+	 * Adds where the results are to the file SPAWNPROOF_RESULTS_LOG names, a line for each test run in a build. The daemon
+	 * sets it for the pull requests it tests, to find their results after the build.
+	 */
+	private void noteResults(Path results) throws IOException {
+		String log = System.getenv("SPAWNPROOF_RESULTS_LOG");
+		if (log == null || log.isBlank()) return;
+		Map<String, Object> line = new LinkedHashMap<>();
+		line.put("task", settings.get("task"));
+		line.put("results", results.toAbsolutePath().toString());
+		Files.writeString(Path.of(log), Json.write(line) + "\n", StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.CREATE,
+			java.nio.file.StandardOpenOption.APPEND);
 	}
 
 	void echo(String line) {

@@ -55,6 +55,7 @@ public final class Text {
 			int i = 1;
 			for (Map<String, Object> l : waiting) out.append(row(l, now, "queuedAt").replaceFirst("^  ", String.format("%2d. ", i++))).append(" waiting").append('\n');
 		}
+		out.append(watching(Json.list(s, "watching"), now));
 		List<Map<String, Object>> recent = Json.list(s, "recent");
 		if (!recent.isEmpty()) {
 			out.append("\nRecently\n");
@@ -66,6 +67,43 @@ public final class Text {
 			}
 		}
 		return out.toString().stripTrailing();
+	}
+
+	/** The watched repos: what's being tested, what's next, and what each pull request came to. */
+	static String watching(List<Map<String, Object>> repos, long now) {
+		if (repos.isEmpty()) return "";
+		StringBuilder out = new StringBuilder("\nWatching (pull requests tested here)\n");
+		for (Map<String, Object> r : repos) {
+			out.append("  ").append(Json.str(r, "repo"));
+			Map<String, Object> testing = Json.obj(r, "testing");
+			if (!testing.isEmpty()) {
+				out.append(": testing #").append(Json.num(testing, "pr", 0)).append(" (").append(shortSha(Json.str(testing, "sha"))).append("), ")
+					.append(duration(now - Json.num(testing, "startedAt", now)));
+			}
+			List<String> waiting = Json.strings(r, "waiting");
+			if (!waiting.isEmpty()) out.append(testing.isEmpty() ? ": " : "; ").append("then #").append(String.join(", #", waiting));
+			out.append('\n');
+			String problem = Json.str(r, "problem");
+			if (problem != null) out.append("    ! ").append(problem).append('\n');
+			for (Map<String, Object> p : Json.list(r, "prs")) {
+				String state = String.valueOf(Json.str(p, "state"));
+				if (state.equals("testing") || state.equals("waiting")) continue;
+				out.append("    #").append(Json.num(p, "pr", 0)).append(' ');
+				String summary = Json.str(p, "summary");
+				switch (state) {
+					case "passed", "failed", "error" -> out.append(state).append(": ").append(summary).append(" (")
+						.append(shortSha(Json.str(p, "sha"))).append(", ").append(duration(now - Json.num(p, "at", now))).append(" ago)");
+					case "interrupted" -> out.append("not finished when Spawnproof stopped: tested again");
+					default -> out.append(summary != null ? summary : state);
+				}
+				out.append('\n');
+			}
+		}
+		return out.toString();
+	}
+
+	private static String shortSha(String sha) {
+		return sha == null ? "?" : sha.substring(0, Math.min(7, sha.length()));
 	}
 
 	private static String row(Map<String, Object> l, long now, String since) {

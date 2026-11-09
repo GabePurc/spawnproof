@@ -4,6 +4,8 @@ import io.github.gabepurc.spawnproof.Dirs;
 import io.github.gabepurc.spawnproof.Json;
 import io.github.gabepurc.spawnproof.Version;
 import io.github.gabepurc.spawnproof.Wire;
+import io.github.gabepurc.spawnproof.watch.Watch;
+import io.github.gabepurc.spawnproof.watch.Watcher;
 
 import java.io.IOException;
 import java.net.StandardProtocolFamily;
@@ -41,6 +43,7 @@ public final class Daemon {
 	private final History history;
 	private final Scheduler scheduler;
 	private final Displays displays;
+	private final Watcher watcher = new Watcher(config, Daemon::log);
 	private final ExecutorService grants = Executors.newCachedThreadPool(r -> {
 		Thread t = new Thread(r, "spawnproof-grant");
 		t.setDaemon(true);
@@ -112,6 +115,7 @@ public final class Daemon {
 		server = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
 		server.bind(UnixDomainSocketAddress.of(socket));
 		Runtime.getRuntime().addShutdownHook(new Thread(this::cleanUp, "spawnproof-cleanup"));
+		watcher.start();
 		Thread keeper = new Thread(this::housekeeping, "spawnproof-housekeeping");
 		keeper.setDaemon(true);
 		keeper.start();
@@ -143,7 +147,8 @@ public final class Daemon {
 				return;
 			}
 			long now = System.currentTimeMillis();
-			boolean busy = !scheduler.isEmpty() || connections.get() > 0;
+			// A watched repo keeps it up: its pull requests can't be tested by a daemon that isn't running.
+			boolean busy = !scheduler.isEmpty() || connections.get() > 0 || watcher.watching();
 			if (busy) lastBusy = now;
 			displays.stopIfIdle(scheduler.hiddenInUse(), config.displayIdleMinutes * 60_000L);
 			if (!Files.exists(socket)) {
@@ -166,6 +171,7 @@ public final class Daemon {
 	}
 
 	private synchronized void cleanUp() {
+		watcher.stop();
 		displays.stop();
 		try {
 			Files.deleteIfExists(socket);
@@ -203,19 +209,40 @@ public final class Daemon {
 					wire.send(Map.of("type", "ok", "config", config.toMap()));
 				}
 				case "stop" -> {
-					if (!Json.bool(request, "force") && !scheduler.isEmpty()) {
+					boolean force = Json.bool(request, "force");
+					if (!force && !scheduler.isEmpty()) {
 						wire.send(Map.of("type", "error", "message", "games are running or waiting (stop --force stops anyway)"));
+						return;
+					}
+					if (!force && !watcher.testing().isEmpty()) {
+						wire.send(Map.of("type", "error", "message", "testing " + String.join(", ", watcher.testing()) + " (stop --force stops anyway; "
+							+ "it's tested again when Spawnproof starts)"));
+						return;
+					}
+					// A newer Spawnproof replacing this one says so, and picks the watching back up when it starts. Anyone else is
+					// turned down while repos are watched: above all a build with an older Spawnproof, which would replace this daemon
+					// with one that can't watch. Turned down, it uses this one as it is.
+					if (!force && !Json.bool(request, "replace") && watcher.watching()) {
+						wire.send(Map.of("type", "error", "message", "watching " + String.join(", ", watcher.watched()) + " to test its pull requests "
+							+ "(spawnproof unwatch stops that; stop --force stops Spawnproof anyway, and the watching starts again with it)"));
 						return;
 					}
 					wire.send(Map.of("type", "ok"));
 					log("stopping on request");
 					stop();
 				}
+				case "watch" -> wire.send(watcher.watch(new Watch(Json.str(request, "repo"), Json.str(request, "source"),
+					String.valueOf(request.getOrDefault("path", "")), Json.strings(request, "args"), System.currentTimeMillis())));
+				case "unwatch" -> wire.send(watcher.unwatch(Json.str(request, "repo")));
+				case "test-pr" -> wire.send(watcher.testPr(Json.str(request, "repo"), Json.num(request, "pr", -1)));
 				default -> wire.send(Map.of("type", "error", "message", "unknown request: " + type));
 			}
 		} catch (ClosedChannelException e) {
 			// The client went away.
-		} catch (IOException | RuntimeException e) {
+		} catch (IOException e) {
+			// What went wrong with a request (watching a repo, say) goes back to whoever asked.
+			trySend(wire, Map.of("type", "error", "message", String.valueOf(e.getMessage())));
+		} catch (RuntimeException e) {
 			log("a connection failed: " + e);
 		} finally {
 			wire.close();
@@ -301,6 +328,8 @@ public final class Daemon {
 		s.put("display", displays.describe());
 		s.put("config", config.toMap());
 		s.put("recent", history.last(5));
+		s.put("watching", watcher.describe());
+		s.put("testing", watcher.testing());
 		return s;
 	}
 }

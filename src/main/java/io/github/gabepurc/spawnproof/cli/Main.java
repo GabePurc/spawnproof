@@ -7,12 +7,15 @@ import io.github.gabepurc.spawnproof.Version;
 import io.github.gabepurc.spawnproof.client.Client;
 import io.github.gabepurc.spawnproof.client.DaemonStarter;
 import io.github.gabepurc.spawnproof.client.Text;
+import io.github.gabepurc.spawnproof.daemon.DaemonConfig;
+import io.github.gabepurc.spawnproof.watch.GitHub;
 
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -44,7 +47,13 @@ public final class Main {
 		      --clock real         run at normal speed (default: as fast as the games draw)
 		      --graphics normal    normal settings, for screenshots people will see
 		      --task <task>        the game task (default: runClientGameTest)
-		  install [--init-script] Put `spawnproof` in ~/.local/bin; --init-script also queues every Gradle build's games
+		  watch [<test options>] In a mod's folder: test each new commit on its GitHub pull requests on this machine, with
+		                         spawnproof test and these options, and put the result on the pull request as a check
+		  unwatch [<owner/repo>] Stop watching (this folder's repo, or the one named)
+		  pr <number>            Test a pull request of this folder's repo now: one from a fork, or one to run again
+		  install [--init-script] [--service]
+		                         Put `spawnproof` in ~/.local/bin; --init-script also queues every Gradle build's games;
+		                         --service starts the daemon when you log in (systemd), for watched repos
 		  stop [--force]         Stop the daemon (it starts again with the next game)
 		  version
 		""";
@@ -99,6 +108,12 @@ public final class Main {
 					return test(rest, err);
 				case "install":
 					return install(rest, out);
+				case "watch":
+					return watch(rest, out, err);
+				case "unwatch":
+					return unwatch(rest, out);
+				case "pr":
+					return testPr(rest, out, err);
 				case "version":
 				case "--version":
 					out.println(Version.VERSION);
@@ -243,6 +258,7 @@ public final class Main {
 				out.println("(" + bin.getParent() + " isn't on your PATH yet.)");
 			}
 		}
+		if (args.contains("--service") || Files.isRegularFile(serviceFile())) installService(out);
 		if (args.contains("--init-script")) {
 			String gradleHome = System.getenv("GRADLE_USER_HOME");
 			Path initScript = (gradleHome != null ? Path.of(gradleHome) : Path.of(System.getProperty("user.home"), ".gradle"))
@@ -257,7 +273,7 @@ public final class Main {
 	}
 
 	/** An init script that applies the plugin from this jar to a build (beside any copy it applies itself: the first wins). */
-	private static String initScript(Path jar, List<String> comment) {
+	static String initScript(Path jar, List<String> comment) {
 		List<String> lines = new ArrayList<>(comment);
 		lines.addAll(List.of(
 			"initscript {",
@@ -272,66 +288,18 @@ public final class Main {
 		return String.join("\n", lines);
 	}
 
-	/**
-	 * spawnproof test: the mod's game task through its Gradle wrapper, as a test run across games. The plugin comes from this
-	 * jar by an init script, so it works in any mod's folder; a build with the plugin applied already uses this copy.
-	 */
+	/** spawnproof test: the mod's game task through its Gradle wrapper, as a test run across games (see TestCommand). */
 	private static int test(List<String> args, PrintStream err) throws IOException, UsageException {
-		String usage = "test [<tests>] [--games <n>] [--only-failures] [--skip <tests>] [--clock real] [--graphics normal] [--task <task>] "
-			+ "[-- <gradle arguments>]";
-		List<String> tests = new ArrayList<>();
-		Map<String, String> options = new LinkedHashMap<>();
-		boolean onlyFailures = false;
-		List<String> gradleArgs = new ArrayList<>();
-		for (int i = 0; i < args.size(); i++) {
-			String a = args.get(i);
-			if (a.equals("--")) {
-				gradleArgs.addAll(args.subList(i + 1, args.size()));
-				break;
-			}
-			switch (a) {
-				case "--only-failures" -> onlyFailures = true;
-				case "--games", "--skip", "--clock", "--graphics", "--task" -> {
-					if (++i >= args.size()) throw new UsageException(usage);
-					options.put(a.substring(2), args.get(i));
-				}
-				default -> {
-					if (a.startsWith("-")) throw new UsageException(usage);
-					tests.add(a);
-				}
-			}
-		}
-		String games = options.get("games");
-		if (games != null && !games.matches("[1-9][0-9]*")) throw new UsageException("test --games <n>, a number of games from 1 up");
-
 		Path here = Path.of("").toAbsolutePath();
-		Path wrapper = null;
-		for (Path dir = here; dir != null && wrapper == null; dir = dir.getParent()) {
-			Path candidate = dir.resolve(Dirs.isWindows() ? "gradlew.bat" : "gradlew");
-			if (Files.isRegularFile(candidate)) wrapper = candidate;
+		List<String> command;
+		try {
+			command = TestCommand.build(here, args);
+		} catch (TestCommand.BadOptions e) {
+			throw new UsageException(e.getMessage());
 		}
-		if (wrapper == null) throw new IOException("no Gradle wrapper (gradlew) in " + here + " or above it: run spawnproof test in a mod's folder");
-
-		List<String> command = new ArrayList<>();
-		command.add(wrapper.toString());
-		command.add(options.getOrDefault("task", "runClientGameTest"));
-		command.add("-Pspawnproof.games" + (games != null ? "=" + games : ""));
-		if (!tests.isEmpty()) command.add("-Pspawnproof.tests=" + String.join(",", tests));
-		if (options.containsKey("skip")) command.add("-Pspawnproof.skip=" + options.get("skip"));
-		if (options.containsKey("clock")) command.add("-Pspawnproof.clock=" + options.get("clock"));
-		if (options.containsKey("graphics")) command.add("-Pspawnproof.graphics=" + options.get("graphics"));
-		if (onlyFailures) command.add("-Pspawnproof.onlyFailures");
-		command.addAll(gradleArgs);
 		err.println("spawnproof: " + String.join(" ", command));
-
-		Path jar = DaemonStarter.classpath();
-		if (Files.isDirectory(jar)) {
+		if (!TestCommand.applyPlugin(command)) {
 			err.println("spawnproof: (running from classes, not a jar: the build uses its own copy of the plugin, if it has one)");
-		} else {
-			Path script = Dirs.state().resolve("init").resolve("spawnproof-test.gradle");
-			Files.createDirectories(script.getParent());
-			Files.writeString(script, initScript(jar, List.of("// Written by `spawnproof test`, which runs builds with it: it applies the plugin from Spawnproof's jar.")));
-			command.addAll(2, List.of("-I", script.toString()));
 		}
 		Process p = new ProcessBuilder(command).inheritIO().directory(here.toFile()).start();
 		try {
@@ -340,6 +308,175 @@ public final class Main {
 			p.destroy();
 			Thread.currentThread().interrupt();
 			return 130;
+		}
+	}
+
+	/** The GitHub repo this folder is a checkout of (its origin), the checkout's top folder, and this folder in it. */
+	private record Here(String repo, Path top, Path dir) {
+		/** This folder from the checkout's top, with / between folders: "" at the top. */
+		String path() {
+			return top.relativize(dir).toString().replace('\\', '/');
+		}
+	}
+
+	private static Here here() throws IOException {
+		Path dir = Path.of("").toAbsolutePath().toRealPath();
+		String top = git(dir, "rev-parse", "--show-toplevel");
+		if (top == null) throw new IOException(dir + " isn't in a git checkout: run this in a mod's folder");
+		String url = git(dir, "remote", "get-url", "origin");
+		String repo = GitHub.repoFromUrl(url);
+		if (repo == null) throw new IOException("this checkout's origin (" + (url == null ? "none" : url) + ") isn't a GitHub repo");
+		return new Here(repo, Path.of(top).toRealPath(), dir);
+	}
+
+	/** What a git command prints, or null if it fails. */
+	private static String git(Path dir, String... args) throws IOException {
+		List<String> command = new ArrayList<>(List.of("git"));
+		command.addAll(List.of(args));
+		Process p = new ProcessBuilder(command).directory(dir.toFile()).redirectError(ProcessBuilder.Redirect.DISCARD).start();
+		p.getOutputStream().close();
+		String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+		try {
+			return p.waitFor() == 0 && !out.isEmpty() ? out : null;
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new java.io.InterruptedIOException("cancelled");
+		}
+	}
+
+	/** A request to the daemon that an older one wouldn't know. */
+	private static Map<String, Object> callNew(Map<String, Object> request, PrintStream err) throws IOException {
+		try {
+			return Client.callCurrent(request, message -> err.println("spawnproof: " + message));
+		} catch (IOException e) {
+			if (String.valueOf(e.getMessage()).startsWith("unknown request")) {
+				throw new IOException("the Spawnproof running now is older than this one and can't do that. It's replaced once its games are done: "
+					+ "try again then");
+			}
+			throw e;
+		}
+	}
+
+	/** spawnproof watch: the daemon tests each new commit on this repo's pull requests, as spawnproof test here would. */
+	private static int watch(List<String> args, PrintStream out, PrintStream err) throws IOException, UsageException {
+		try {
+			TestCommand.check(args);
+		} catch (TestCommand.BadOptions e) {
+			throw new UsageException("watch [<tests>] [--games <n>] [--skip <tests>] [--clock real] [--graphics normal] [--task <task>] [-- <gradle arguments>]");
+		}
+		Here here = here();
+		try {
+			TestCommand.build(here.dir(), args);
+		} catch (TestCommand.BadOptions e) {
+			throw new UsageException(e.getMessage());
+		}
+		GitHub.checkCanReport(DaemonConfig.load(Dirs.configFile()).githubApi(), here.repo());
+		Map<String, Object> request = new LinkedHashMap<>();
+		request.put("type", "watch");
+		request.put("repo", here.repo());
+		request.put("source", here.top().toString());
+		request.put("path", here.path());
+		request.put("args", args);
+		Map<String, Object> reply = callNew(request, err);
+		String test = "spawnproof test" + (args.isEmpty() ? "" : " " + String.join(" ", args)) + (here.path().isEmpty() ? "" : " in " + here.path());
+		out.println("Watching " + here.repo() + ". Each new commit on its pull requests is tested on this machine (" + test + "), and the result "
+			+ "goes on the pull request as the \"spawnproof\" check.");
+		out.println("- To require it before merging: on GitHub, add \"spawnproof\" to the branch's required status checks.");
+		out.println("- Pull requests from forks are tested only when you ask: spawnproof pr <number>.");
+		out.println("- The tests run in a clone of its own: " + Json.str(reply, "dir"));
+		if (!Files.isRegularFile(serviceFile())) {
+			out.println("- Spawnproof stays running while it watches anything. To start it when you log in, too: spawnproof install --service");
+		}
+		return 0;
+	}
+
+	private static int unwatch(List<String> args, PrintStream out) throws IOException, UsageException {
+		if (args.size() > 1) throw new UsageException("unwatch [<owner/repo>]");
+		String repo = args.isEmpty() ? here().repo() : args.get(0);
+		try {
+			Client.call(Map.of("type", "unwatch", "repo", repo), false);
+		} catch (IOException e) {
+			if (!Files.exists(Dirs.socket())) throw new IOException("Spawnproof isn't running, so it isn't watching anything");
+			throw e;
+		}
+		out.println("Stopped watching " + repo + ". Its clone is being deleted.");
+		return 0;
+	}
+
+	private static int testPr(List<String> args, PrintStream out, PrintStream err) throws IOException, UsageException {
+		if (args.size() != 1 || !args.get(0).replaceFirst("^#", "").matches("[1-9][0-9]*")) throw new UsageException("pr <number>");
+		long number = Long.parseLong(args.get(0).replaceFirst("^#", ""));
+		Map<String, Object> reply = callNew(Map.of("type", "test-pr", "repo", here().repo(), "pr", number), err);
+		out.println(Json.str(reply, "message") + " spawnproof status shows how it goes.");
+		return 0;
+	}
+
+	private static Path serviceFile() {
+		String xdg = System.getenv("XDG_CONFIG_HOME");
+		Path config = xdg != null && !xdg.isBlank() ? Path.of(xdg) : Path.of(System.getProperty("user.home"), ".config");
+		return config.resolve("systemd/user/spawnproof.service");
+	}
+
+	/**
+	 * A systemd user service that starts the daemon when you log in, so watched repos are looked after without a build to
+	 * start it. Installing again points it at the new jar. A daemon already running stays; the service's starts with the
+	 * next login, or when that one stops.
+	 */
+	private static void installService(PrintStream out) throws IOException {
+		if (!Dirs.isLinux()) throw new IOException("--service is for Linux (systemd) so far");
+		Path systemctl = null;
+		for (String dir : List.of("/usr/bin", "/bin", "/usr/local/bin")) if (Files.isExecutable(Path.of(dir, "systemctl"))) systemctl = Path.of(dir, "systemctl");
+		if (systemctl == null) throw new IOException("--service needs systemd, and there's no systemctl here");
+		Path unit = serviceFile();
+		Files.createDirectories(unit.getParent());
+		Files.createDirectories(Dirs.state());
+		Files.writeString(unit, serviceUnit());
+		systemctl(systemctl, "daemon-reload");
+		systemctl(systemctl, "enable", "spawnproof.service");
+		boolean running;
+		try (Client.Connection ignored = Client.connect(false)) {
+			running = true;
+		} catch (IOException e) {
+			running = false;
+		}
+		if (!running) systemctl(systemctl, "start", "spawnproof.service");
+		out.println("Installed " + unit + ": Spawnproof starts when you log in" + (running ? " (the one running now carries on until then)." : ", and is running now."));
+	}
+
+	/** The service: the daemon as a build would start it, logging where it always does. */
+	static String serviceUnit() throws IOException {
+		List<String> command = new ArrayList<>();
+		for (String part : DaemonStarter.daemonCommand()) command.add(part.matches("[\\w./:=+-]+") ? part : "\"" + part.replace("\\", "\\\\").replace("\"", "\\\"") + "\"");
+		return String.join("\n",
+			"# Written by `spawnproof install --service`. Stop it with: systemctl --user disable --now spawnproof",
+			"[Unit]",
+			"Description=Spawnproof: queues Minecraft test games, and tests the pull requests of watched repos",
+			"Documentation=https://github.com/GabePurc/spawnproof",
+			"",
+			"[Service]",
+			"ExecStart=" + String.join(" ", command),
+			"WorkingDirectory=" + Dirs.state(),
+			"StandardOutput=append:" + Dirs.daemonLog(),
+			"StandardError=inherit",
+			"Restart=on-failure",
+			"RestartSec=10",
+			"",
+			"[Install]",
+			"WantedBy=default.target",
+			"");
+	}
+
+	private static void systemctl(Path systemctl, String... args) throws IOException {
+		List<String> command = new ArrayList<>(List.of(systemctl.toString(), "--user"));
+		command.addAll(List.of(args));
+		Process p = new ProcessBuilder(command).redirectErrorStream(true).start();
+		p.getOutputStream().close();
+		String said = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+		try {
+			if (p.waitFor() != 0) throw new IOException("systemctl --user " + String.join(" ", args) + " failed" + (said.isEmpty() ? "" : ": " + said));
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new java.io.InterruptedIOException("cancelled");
 		}
 	}
 }

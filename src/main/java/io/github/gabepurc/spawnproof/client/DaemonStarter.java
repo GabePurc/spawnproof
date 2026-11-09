@@ -24,9 +24,7 @@ public final class DaemonStarter {
 		List<String> command = new ArrayList<>();
 		// Its own session: Ctrl+C in the terminal that started a build must not take the daemon (and others' games) with it.
 		if (!Dirs.isWindows() && Files.isExecutable(Path.of("/usr/bin/setsid"))) command.add("/usr/bin/setsid");
-		command.add(java());
-		command.addAll(List.of("-Xmx96m", "-Xss512k", "-XX:+UseSerialGC", "-XX:TieredStopAtLevel=1", "-Dspawnproof.daemon=true",
-			"-cp", classpath().toString(), "io.github.gabepurc.spawnproof.daemon.Daemon"));
+		command.addAll(daemonCommand());
 		ProcessBuilder pb = new ProcessBuilder(command);
 		pb.directory(state.toFile());
 		// A home set by system property (tests) reaches the daemon as the variable.
@@ -36,6 +34,15 @@ public final class DaemonStarter {
 		pb.redirectInput(ProcessBuilder.Redirect.PIPE);
 		Process p = pb.start();
 		p.getOutputStream().close();
+	}
+
+	/** The daemon's command line: this java, with this jar. */
+	public static List<String> daemonCommand() throws IOException {
+		List<String> command = new ArrayList<>();
+		command.add(java());
+		command.addAll(List.of("-Xmx96m", "-Xss512k", "-XX:+UseSerialGC", "-XX:TieredStopAtLevel=1", "-Dspawnproof.daemon=true",
+			"-cp", classpath().toString(), "io.github.gabepurc.spawnproof.daemon.Daemon"));
+		return command;
 	}
 
 	/** The java running this code (Gradle's, or the CLI's). */
