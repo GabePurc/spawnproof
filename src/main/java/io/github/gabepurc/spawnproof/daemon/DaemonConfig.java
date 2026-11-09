@@ -26,6 +26,8 @@ public final class DaemonConfig {
 	volatile int displayIdleMinutes = 15;
 	/** How often a watched repo's pull requests are looked at for new commits. */
 	volatile int watchSeconds = 60;
+	/** How many past test runs of each task in each checkout keep their results, for the dashboard. */
+	volatile int keepRuns = io.github.gabepurc.spawnproof.run.KeptRuns.DEFAULT_KEEP;
 	/** Where GitHub's API is: another address for GitHub Enterprise, or for the tests' stand-in. */
 	volatile String githubApi = "https://api.github.com";
 
@@ -70,13 +72,14 @@ public final class DaemonConfig {
 				case "idleMinutes" -> idleMinutes = range(value, 1, 7 * 24 * 60);
 				case "displayIdleMinutes" -> displayIdleMinutes = range(value, 1, 7 * 24 * 60);
 				case "watchSeconds" -> watchSeconds = range(value, 1, 3600);
+				case "keepRuns" -> keepRuns = range(value, 1, 1000);
 				case "githubApi" -> {
 					if (!value.matches("https?://\\S+")) return "githubApi is an address, like https://api.github.com";
 					githubApi = value.replaceAll("/+$", "");
 				}
 				default -> {
 					return "unknown setting '" + key + "' (slots, display, resolution, holdWhilePlaying, idleMinutes, displayIdleMinutes, watchSeconds, "
-						+ "githubApi)";
+						+ "keepRuns, githubApi)";
 				}
 			}
 		} catch (IllegalArgumentException e) {
@@ -111,12 +114,17 @@ public final class DaemonConfig {
 		m.put("idleMinutes", idleMinutes);
 		m.put("displayIdleMinutes", displayIdleMinutes);
 		m.put("watchSeconds", watchSeconds);
+		m.put("keepRuns", keepRuns);
 		m.put("githubApi", githubApi);
 		return m;
 	}
 
 	public int watchSeconds() {
 		return watchSeconds;
+	}
+
+	public int keepRuns() {
+		return keepRuns;
 	}
 
 	public String githubApi() {

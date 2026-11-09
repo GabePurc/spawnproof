@@ -54,6 +54,8 @@ public final class Main {
 		  install [--init-script] [--service]
 		                         Put `spawnproof` in ~/.local/bin; --init-script also queues every Gradle build's games;
 		                         --service starts the daemon when you log in (systemd), for watched repos
+		  dashboard              Open the dashboard app: projects, live games, past results with screenshots
+		  start                  Start the daemon if it isn't running (the first game starts it anyway)
 		  stop [--force]         Stop the daemon (it starts again with the next game)
 		  version
 		""";
@@ -114,6 +116,14 @@ public final class Main {
 					return unwatch(rest, out);
 				case "pr":
 					return testPr(rest, out, err);
+				case "dashboard":
+					return dashboard(out);
+				case "start": {
+					// This version: an older one is replaced once its games are done, as a build would replace it.
+					Map<String, Object> status = Client.callCurrent(Map.of("type", "status"), message -> err.println("spawnproof: " + message));
+					out.println("Spawnproof " + Json.str(status, "version") + " is running (pid " + Json.num(status, "pid", -1) + ").");
+					return 0;
+				}
 				case "version":
 				case "--version":
 					out.println(Version.VERSION);
@@ -342,6 +352,60 @@ public final class Main {
 			Thread.currentThread().interrupt();
 			throw new java.io.InterruptedIOException("cancelled");
 		}
+	}
+
+	/**
+	 * spawnproof dashboard: opens the dashboard app, a program of its own (made with Tauri, in {@code dashboard/}), after
+	 * starting the daemon it talks to. It's told where the daemon's socket is, so it finds the same one this command does.
+	 */
+	private static int dashboard(PrintStream out) throws IOException {
+		Path app = dashboardApp();
+		if (app == null) {
+			out.println("The dashboard app isn't installed. Until releases carry it, build it from a clone of Spawnproof: in dashboard/, run\n"
+				+ "  cargo build --release\n"
+				+ "then copy target/release/spawnproof-dashboard to ~/.local/bin (or point SPAWNPROOF_DASHBOARD at it).");
+			return 1;
+		}
+		Client.callCurrent(Map.of("type", "status"), message -> out.println("spawnproof: " + message));
+		List<String> command = new ArrayList<>();
+		// Its own session, as the daemon has: closing this terminal mustn't close the window.
+		if (!Dirs.isWindows() && Files.isExecutable(Path.of("/usr/bin/setsid"))) command.add("/usr/bin/setsid");
+		command.add(app.toString());
+		ProcessBuilder pb = new ProcessBuilder(command);
+		pb.environment().put("SPAWNPROOF_SOCKET", Dirs.socket().toString());
+		// For starting the daemon again if it stops while the app is open: this command, from this jar.
+		pb.environment().put("SPAWNPROOF_START", String.join("\n", startCommand()));
+		pb.redirectErrorStream(true);
+		pb.redirectOutput(ProcessBuilder.Redirect.appendTo(Dirs.state().resolve("dashboard.log").toFile()));
+		pb.redirectInput(ProcessBuilder.Redirect.PIPE);
+		pb.start().getOutputStream().close();
+		out.println("Opened the dashboard.");
+		return 0;
+	}
+
+	/** `spawnproof start` from this jar, with this java: the app runs it, one argument a line, to start the daemon. */
+	private static List<String> startCommand() throws IOException {
+		List<String> command = new ArrayList<>(List.of(DaemonStarter.java()));
+		if (Dirs.override() != null) command.add("-Dspawnproof.home=" + Dirs.override());
+		command.addAll(List.of("-cp", DaemonStarter.classpath().toString(), Main.class.getName(), "start"));
+		return command;
+	}
+
+	/** SPAWNPROOF_DASHBOARD, or spawnproof-dashboard on the PATH or in ~/.local/bin; null if there's none. */
+	static Path dashboardApp() {
+		String set = System.getenv("SPAWNPROOF_DASHBOARD");
+		if (set != null && !set.isBlank()) return Files.isExecutable(Path.of(set)) ? Path.of(set) : null;
+		String name = Dirs.isWindows() ? "spawnproof-dashboard.exe" : "spawnproof-dashboard";
+		List<Path> places = new ArrayList<>();
+		for (String dir : String.valueOf(System.getenv("PATH")).split(java.io.File.pathSeparator)) {
+			if (!dir.isBlank()) places.add(Path.of(dir));
+		}
+		places.add(Path.of(System.getProperty("user.home"), ".local", "bin"));
+		for (Path dir : places) {
+			Path app = dir.resolve(name);
+			if (Files.isRegularFile(app) && Files.isExecutable(app)) return app;
+		}
+		return null;
 	}
 
 	/** A request to the daemon that an older one wouldn't know. */

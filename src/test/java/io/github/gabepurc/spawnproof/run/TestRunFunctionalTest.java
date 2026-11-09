@@ -2,6 +2,8 @@ package io.github.gabepurc.spawnproof.run;
 
 import io.github.gabepurc.spawnproof.Dirs;
 import io.github.gabepurc.spawnproof.Json;
+import io.github.gabepurc.spawnproof.Wire;
+import io.github.gabepurc.spawnproof.client.Client;
 import io.github.gabepurc.spawnproof.cli.Main;
 import org.gradle.testkit.runner.BuildResult;
 import org.gradle.testkit.runner.GradleRunner;
@@ -22,6 +24,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -99,6 +102,23 @@ class TestRunFunctionalTest {
 		}
 		""";
 
+	/** A game run on its own, without a test run: it writes its results as Spawnproof for Fabric would, and a test fails. */
+	private static final String ONE_GAME = """
+		import java.nio.file.*;
+
+		public class OneGame {
+			public static void main(String[] args) throws Exception {
+				Path out = Path.of("spawnproof");
+				Files.createDirectories(out.resolve("screenshots/hat"));
+				Files.writeString(out.resolve("screenshots/hat/front.png"), "a picture of a hat");
+				Files.writeString(out.resolve("results.json"), "{\\"format\\":\\"spawnproof-results\\",\\"version\\":1,\\"status\\":\\"failed\\","
+					+ "\\"counts\\":{\\"tests\\":1,\\"failed\\":1},\\"tests\\":[{\\"name\\":\\"hat\\",\\"status\\":\\"failed\\",\\"checks\\":[],"
+					+ "\\"screenshots\\":[{\\"name\\":\\"front\\",\\"path\\":\\"screenshots/hat/front.png\\"}]}]}");
+				System.exit(1);
+			}
+		}
+		""";
+
 	@BeforeEach
 	void setUp() throws IOException {
 		home = temp.resolve("home");
@@ -121,8 +141,15 @@ class TestRunFunctionalTest {
 			"\t\tnew File(runFolder, 'setup.txt').text = 'what the build puts in the run folder'",
 			"\t}",
 			"}",
+			"tasks.register('runClientGameTestAlone', JavaExec) {",
+			"\tclasspath = sourceSets.main.runtimeClasspath",
+			"\tmainClass = 'OneGame'",
+			"\tworkingDir = runFolder",
+			"\tdoFirst { runFolder.mkdirs() }",
+			"}",
 			""));
 		Files.writeString(project.resolve("src/main/java/FakeGame.java"), FAKE_GAME);
+		Files.writeString(project.resolve("src/main/java/OneGame.java"), ONE_GAME);
 	}
 
 	@AfterEach
@@ -169,6 +196,12 @@ class TestRunFunctionalTest {
 		String junit = Files.readString(project.resolve("run/spawnproof/junit.xml"));
 		assertTrue(junit.contains("<testsuites name=\"spawnproof\" tests=\"4\" failures=\"1\""), junit);
 		assertTrue(Files.isRegularFile(project.resolve("run/spawnproof/screenshots/a/shot.png")), "the screenshots are brought together");
+		List<Map<String, Object>> kept = KeptRuns.all();
+		assertEquals(1, kept.size(), "the run is kept for the dashboard: " + kept);
+		assertEquals("test run", kept.get(0).get("how"));
+		assertEquals("mod", kept.get(0).get("project"));
+		assertEquals(List.of("c"), Json.strings(kept.get(0), "notPassed"));
+		assertTrue(Files.isRegularFile(KeptRuns.folder().resolve(Json.str(kept.get(0), "id")).resolve("screenshots/a/shot.png")));
 		assertTrue(Files.isRegularFile(project.resolve("run/games/1/output.log")));
 
 		String output = result.getOutput();
@@ -218,6 +251,7 @@ class TestRunFunctionalTest {
 		assertEquals("passed", results().get("status"));
 		assertEquals(4, names(results()).size());
 		assertFalse(Files.exists(Dirs.socket()), "no daemon was started");
+		assertTrue(KeptRuns.all().isEmpty(), "nobody looks at results kept on CI");
 	}
 
 	@Test
@@ -227,6 +261,46 @@ class TestRunFunctionalTest {
 		BuildResult again = runner(Map.of(), "runClientGameTest", "-Pspawnproof.games=2", "--configuration-cache").build();
 		assertTrue(again.getOutput().contains("Reusing configuration cache"), again.getOutput());
 		assertEquals(2, Json.list(results(), "games").size());
+	}
+
+	@Test
+	void aGameOnItsOwnHasItsResultsKeptToo() throws IOException {
+		runner(Map.of(), "runClientGameTestAlone").buildAndFail();
+		List<Map<String, Object>> kept = KeptRuns.all();
+		assertEquals(1, kept.size(), "kept though its task failed: " + kept);
+		assertEquals("one game", kept.get(0).get("how"));
+		assertEquals(":runClientGameTestAlone", kept.get(0).get("task"));
+		assertTrue(Files.isRegularFile(KeptRuns.folder().resolve(Json.str(kept.get(0), "id")).resolve("screenshots/hat/front.png")));
+	}
+
+	@Test
+	void theDaemonServesTheKeptRunsAndALiveStatus() throws IOException {
+		runner(Map.of(), "runClientGameTest", "-Pspawnproof.games=2").build();
+		String id = Json.str(KeptRuns.all().get(0), "id");
+
+		List<Map<String, Object>> projects = Json.list(Client.call(Map.of("type", "projects"), false), "projects");
+		assertEquals("mod", Json.str(projects.get(0), "name"), projects.toString());
+		assertEquals(id, Json.str(Json.obj(projects.get(0), "lastRun"), "id"));
+		assertEquals(project.toRealPath().toString(), Json.str(Json.list(projects.get(0), "checkouts").get(0), "dir"));
+
+		List<Map<String, Object>> runs = Json.list(Client.call(Map.of("type", "runs", "project", "mod"), false), "runs");
+		assertEquals(List.of(id), runs.stream().map(r -> Json.str(r, "id")).toList());
+
+		Map<String, Object> run = Client.call(Map.of("type", "run", "id", id), false);
+		assertEquals(4, Json.list(Json.obj(run, "results"), "tests").size());
+		assertTrue(Files.isDirectory(Path.of(Json.str(run, "folder"))));
+		IOException notOne = assertThrows(IOException.class, () -> Client.call(Map.of("type", "run", "id", "../../config"), false));
+		assertTrue(notOne.getMessage().startsWith("no kept run"), notOne.getMessage());
+
+		try (Wire wire = Wire.connect(Dirs.socket())) {
+			assertEquals("welcome", wire.read().get("type"));
+			wire.send(Map.of("type", "follow"));
+			for (int i = 0; i < 2; i++) {
+				Map<String, Object> status = wire.read();
+				assertEquals("status", status.get("type"), "status after status, for as long as the dashboard listens");
+				assertEquals(KeptRuns.folder().toAbsolutePath().toString(), status.get("runsFolder"));
+			}
+		}
 	}
 
 	@Test

@@ -202,6 +202,40 @@ How it goes:
 - `spawnproof status` lists what's watched, what's being tested, and what each pull request came to.
 - GitHub's own CI is left as it is: it goes on running what it runs, and a build on CI still runs its games directly.
 
+## The dashboard
+
+New in 0.4, which isn't released yet. A desktop app for looking at what Spawnproof is doing and has done:
+
+```bash
+spawnproof dashboard
+```
+
+- **Live**: the queue as `spawnproof status` shows it, kept up to date: the games running and how long they have left, the
+  ones waiting and why, anyone playing, and what the watched repos' pull requests are being tested on.
+- **Projects**: every mod Spawnproof has run games for, with how its last test run went.
+- **Results**: a project's past test runs, from each of its checkouts and its pull requests. Each shows its tests, their
+  checks (what failed and why), errors with their stack traces, which game ran what, and the screenshots, which open full
+  size.
+
+Past runs are kept in Spawnproof's state folder (`runs/`), since Loom clears the run folder before every run: a test run
+(`spawnproof test`, `-Pspawnproof.games`) and a game task run on its own both keep their results when they end, if their
+tests are written with [Spawnproof for Fabric](fabric/README.md). Only the last 20 runs of each task in each checkout are
+kept (`spawnproof config keepRuns 50` keeps more). Nothing is kept on CI.
+
+The app talks to the daemon over its socket, like the `spawnproof` command, and starts it if it isn't running. While the
+app is open, the daemon stays up. It's made with [Tauri](https://tauri.app/), works on Linux and macOS, and until releases
+carry it, it's built from a clone of Spawnproof, with [Rust](https://www.rust-lang.org/tools/install) and, on Linux, the web
+view's libraries:
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev   # Linux only
+cd dashboard
+cargo build --release
+cp target/release/spawnproof-dashboard ~/.local/bin/
+```
+
+`spawnproof dashboard` looks for it on the `PATH` and in `~/.local/bin`, or wherever `SPAWNPROOF_DASHBOARD` points.
+
 ## The spawnproof command
 
 ```text
@@ -215,6 +249,8 @@ spawnproof test              in a mod's folder: run its tests across games, with
 spawnproof watch | unwatch   in a mod's folder: test its pull requests' new commits here, and tell GitHub / stop
 spawnproof pr <number>       in a mod's folder: test a pull request now
 spawnproof install --service start the daemon when you log in (Linux, systemd), for watched repos
+spawnproof dashboard         open the dashboard app: projects, live games, past results with screenshots
+spawnproof start             start the daemon if it isn't running (the first game starts it anyway)
 spawnproof stop              stop the daemon (the next game starts it again)
 ```
 

@@ -2,6 +2,7 @@ package io.github.gabepurc.spawnproof.gradle;
 
 import io.github.gabepurc.spawnproof.Git;
 import io.github.gabepurc.spawnproof.Json;
+import io.github.gabepurc.spawnproof.run.TestRun;
 import org.gradle.api.Action;
 import org.gradle.api.Task;
 import org.gradle.api.provider.Provider;
@@ -54,6 +55,17 @@ final class AcquireAction implements Action<Task> {
 		}
 		if (Rules.NONE.equals(role)) return;
 		boolean hide = hidden.get() && Rules.TEST.equals(role);
+		if (Rules.TEST.equals(role) && task instanceof JavaExec exec) {
+			// A test game's results, if its tests are written with Spawnproof, are kept for the dashboard once the task is done.
+			Map<String, Object> who = new LinkedHashMap<>();
+			who.put("project", project);
+			who.put("task", task.getPath());
+			who.put("dir", dir);
+			who.put("branch", Git.branch(Path.of(dir)));
+			who.put("label", System.getenv("SPAWNPROOF_LABEL"));
+			who.put("how", "one game");
+			service.get().keepResultsOf(task.getPath(), TestRun.resultsFolder(exec.getAllJvmArgs(), exec.getWorkingDir().toPath()), who);
+		}
 		if (System.getenv("SPAWNPROOF_LEASE") != null) {
 			// Inside `spawnproof run`, which already holds a slot (and the display) for the whole command.
 			String display = System.getenv("SPAWNPROOF_DISPLAY");

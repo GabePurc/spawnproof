@@ -22,7 +22,7 @@ import java.util.Map;
  * history, since a game that leaves the line without running never reaches the history itself.
  */
 public final class History {
-	private static final int KEEP = 500;
+	static final int KEEP = 500;
 	private final Path file;
 	private final Path lastIdFile;
 	private final ArrayDeque<Map<String, Object>> recent = new ArrayDeque<>();
