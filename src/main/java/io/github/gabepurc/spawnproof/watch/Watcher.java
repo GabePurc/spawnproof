@@ -10,6 +10,7 @@ import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -60,6 +61,8 @@ public final class Watcher {
 		long testStartedAt;
 		boolean dropped;
 		Thread worker;
+		/** Closed pull requests GitHub said were merged, whose tests go on. */
+		final Set<Long> merged = new HashSet<>();
 		// The last look at GitHub, by the poller alone.
 		String etag;
 		List<Map<String, Object>> pulls = List.of();
@@ -133,6 +136,8 @@ public final class Watcher {
 				add(w);
 			}
 		}
+		// Folders a daemon before this one didn't finish deleting.
+		deleteLater(Files.isDirectory(trash()) ? trash() : null, null);
 		poller = new Thread(this::poll, "spawnproof-watch");
 		poller.setDaemon(true);
 		poller.start();
@@ -198,6 +203,8 @@ public final class Watcher {
 	public Map<String, Object> unwatch(String name) throws IOException {
 		Repo r;
 		List<Job> waiting;
+		Path doomed;
+		Thread worker;
 		synchronized (this) {
 			r = repos.remove(name);
 			if (r == null) throw new IOException(name + " isn't watched (spawnproof status lists what is)");
@@ -206,21 +213,48 @@ public final class Watcher {
 			waiting = new ArrayList<>(r.line);
 			r.line.clear();
 			Watch.save(listFile, watches());
+			// Its folder goes out of the way at once, so watching the repo again starts afresh while this one is deleted.
+			doomed = putAway(r.dir);
+			worker = r.worker;
 			notifyAll();
 		}
 		log.accept("unwatch " + name);
 		for (Job j : waiting) tell(r, j.sha(), "error", "Not tested: Spawnproof stopped watching the repo", null);
+		deleteLater(doomed, worker);
+		return Map.of("type", "ok", "repo", name);
+	}
+
+	/** Moves a folder in with the ones being deleted, returning where it went (or the folder itself, if it couldn't move). */
+	private Path putAway(Path dir) {
+		if (!Files.exists(dir)) return null;
+		Path to = trash().resolve(dir.getParent().getFileName() + "-" + dir.getFileName() + "-" + System.nanoTime());
+		try {
+			Files.createDirectories(to.getParent());
+			return Files.move(dir, to, StandardCopyOption.ATOMIC_MOVE);
+		} catch (IOException | RuntimeException e) {
+			log.accept("couldn't move " + dir + " aside to delete it (" + e.getMessage() + "); deleting it where it is");
+			return dir;
+		}
+	}
+
+	/** Deletes a folder once its repo's worker has let go of it. */
+	private void deleteLater(Path dir, Thread worker) {
+		if (dir == null) return;
 		Thread cleaner = new Thread(() -> {
 			try {
-				if (r.worker != null) r.worker.join(60_000);
-				MergedResults.deleteTree(r.dir);
-			} catch (IOException | InterruptedException e) {
-				log.accept("couldn't delete " + r.dir + ": " + e);
+				if (worker != null) worker.join(60_000);
+				MergedResults.deleteTree(dir);
+			} catch (IOException | InterruptedException | RuntimeException e) {
+				log.accept("couldn't delete " + dir + ": " + e);
 			}
 		}, "spawnproof-unwatch");
 		cleaner.setDaemon(true);
 		cleaner.start();
-		return Map.of("type", "ok", "repo", name);
+	}
+
+	/** Where unwatched repos' folders wait to be deleted. No GitHub owner's name starts with a dot. */
+	private Path trash() {
+		return stateDir.resolve(".unwatched");
 	}
 
 	/** Tests a pull request now, a fork's too, even if its commit was tested before. */
@@ -332,13 +366,20 @@ public final class Watcher {
 				if (n < 0 || sha == null) continue;
 				open.add(n);
 				String title = Json.str(pull, "title");
-				Pr known;
+				String knownSha;
+				boolean interrupted;
 				synchronized (this) {
-					known = r.prs.get(n);
+					Pr known = r.prs.get(n);
+					knownSha = known == null ? null : known.sha;
+					interrupted = known != null && "interrupted".equals(known.state);
 				}
-				if (known != null && sha.equals(known.sha) && !"interrupted".equals(known.state)) continue;
+				if (sha.equals(knownSha) && !interrupted) continue;
+				// Left unfinished when Spawnproof stopped, and replaced by a newer commit meanwhile: it won't be finished now.
+				if (interrupted && !sha.equals(knownSha)) tell(r, knownSha, "error", "Not finished: a newer commit replaced it", null);
+				// A fork's commit someone asked for, left unfinished, is finished now; a fork's are otherwise left alone.
+				boolean resumed = interrupted && sha.equals(knownSha);
 				boolean fork = !String.valueOf(Json.str(base, "full_name")).equalsIgnoreCase(String.valueOf(Json.str(Json.obj(head, "repo"), "full_name")));
-				if (fork) {
+				if (fork && !resumed) {
 					synchronized (this) {
 						Pr p = keep(r, n, sha, title);
 						p.state = "fork";
@@ -348,7 +389,7 @@ public final class Watcher {
 					continue;
 				}
 				// A commit not seen here may have been tested before this machine's records were lost.
-				if (known == null || !sha.equals(known.sha)) {
+				if (!sha.equals(knownSha)) {
 					Map<String, Object> status = github().ourStatus(name, sha);
 					String state = status == null ? null : Json.str(status, "state");
 					if ("success".equals(state) || "failure".equals(state)) {
@@ -361,18 +402,28 @@ public final class Watcher {
 						continue;
 					}
 				}
-				enqueue(r, new Job(n, sha, title, Json.str(base, "clone_url"), false));
+				enqueue(r, new Job(n, sha, title, Json.str(base, "clone_url"), fork));
 			}
-			List<Long> closed = new ArrayList<>();
+			// Closed pull requests: forgotten, unless a commit of theirs is waiting, being tested or unfinished.
+			List<Long> busy = new ArrayList<>();
 			synchronized (this) {
-				for (Long n : r.prs.keySet()) if (!open.contains(n)) closed.add(n);
-				for (Long n : closed) {
-					r.prs.remove(n);
-					r.line.removeIf(j -> j.pr() == n);
-					if (r.current != null && r.current.pr() == n) r.test.stop("the pull request was closed");
+				boolean forgot = false;
+				for (Iterator<Map.Entry<Long, Pr>> it = r.prs.entrySet().iterator(); it.hasNext(); ) {
+					Map.Entry<Long, Pr> e = it.next();
+					long n = e.getKey();
+					if (open.contains(n)) continue;
+					if ("interrupted".equals(e.getValue().state) || (r.current != null && r.current.pr() == n)
+						|| r.line.stream().anyMatch(j -> j.pr() == n)) {
+						busy.add(n);
+					} else {
+						it.remove();
+						r.merged.remove(n);
+						forgot = true;
+					}
 				}
-				if (!closed.isEmpty()) save(r);
+				if (forgot) save(r);
 			}
+			for (long n : busy) closed(r, n);
 			if (r.problem != null) log.accept(name + ": GitHub answers again");
 			r.problem = null;
 		} catch (IOException e) {
@@ -400,6 +451,51 @@ public final class Watcher {
 		p.title = title;
 		p.at = System.currentTimeMillis();
 		return p;
+	}
+
+	/**
+	 * A pull request closed while a commit of its was waiting, being tested, or left unfinished. A merged one's test goes on,
+	 * since its commit is now on the branch it went into and the status shows there; it's forgotten once that's done. Any
+	 * other is let go, and GitHub hears it won't be tested.
+	 */
+	private void closed(Repo r, long n) throws IOException {
+		boolean merged;
+		synchronized (this) {
+			merged = r.merged.contains(n);
+		}
+		Map<String, Object> pull = null;
+		if (!merged) {
+			pull = github().pull(r.name(), n);
+			merged = Json.bool(pull, "merged");
+		}
+		List<String> notTested = new ArrayList<>();
+		String unfinished = null;
+		Job resume = null;
+		synchronized (this) {
+			Pr p = r.prs.get(n);
+			if (p == null) return;
+			boolean interrupted = "interrupted".equals(p.state);
+			if (merged) {
+				r.merged.add(n);
+				if (interrupted && pull != null) {
+					resume = new Job(n, p.sha, p.title, Json.str(Json.obj(Json.obj(pull, "base"), "repo"), "clone_url"), true);
+				}
+			} else {
+				for (Iterator<Job> it = r.line.iterator(); it.hasNext(); ) {
+					Job j = it.next();
+					if (j.pr() != n) continue;
+					it.remove();
+					notTested.add(j.sha());
+				}
+				if (r.current != null && r.current.pr() == n) r.test.stop("the pull request was closed");
+				if (interrupted) unfinished = p.sha;
+				r.prs.remove(n);
+				save(r);
+			}
+		}
+		for (String sha : notTested) tell(r, sha, "error", "Not tested: the pull request was closed", null);
+		if (unfinished != null) tell(r, unfinished, "error", "Not finished: the pull request was closed", null);
+		if (resume != null) enqueue(r, resume);
 	}
 
 	/** Puts a commit in its repo's line. An older commit of the same pull request, waiting or being tested, gives way to it. */
@@ -471,10 +567,11 @@ public final class Watcher {
 				return;
 			} catch (IOException | RuntimeException e) {
 				outcome = Report.error("Spawnproof went wrong testing it: " + e.getMessage());
-			}
-			synchronized (this) {
-				r.current = null;
-				r.test = null;
+			} finally {
+				synchronized (this) {
+					r.current = null;
+					r.test = null;
+				}
 			}
 			// The daemon is stopping: GitHub is left waiting, and the next daemon tests it again.
 			if (stopping) return;
@@ -555,7 +652,7 @@ public final class Watcher {
 			boolean onlyIfThere = Json.bool(unsent, "commentOnlyIfThere");
 			if (body != null) {
 				Long id = commentId;
-				if (id == null && onlyIfThere) {
+				if (id == null) {
 					Map<String, Object> found = github().findComment(r.name(), pr);
 					if (found != null) id = Json.num(found, "id", -1);
 				}

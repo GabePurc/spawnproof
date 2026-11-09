@@ -186,7 +186,8 @@ How it goes:
   checkouts are left alone. The clone is kept between runs, build folders and all, so Gradle and Loom don't start over
   each time.
 - Their games wait their turn in the queue like any other build's, and your playing comes first as always. Each repo has
-  one pull request tested at a time, and a newer commit stops the test of an older one.
+  one pull request tested at a time, and a newer commit stops the test of an older one. A pull request that's merged
+  while it's tested is still tested, so its commit gets its check; one closed without merging is let go.
 - Pull requests from forks are left alone until you ask (`spawnproof pr <number>`): testing one runs a stranger's code on
   your machine, so read it first. Those from the repo's own branches are tested on their own, so anyone who can push to
   the repo can run code on your machine; for most mods that's only you.

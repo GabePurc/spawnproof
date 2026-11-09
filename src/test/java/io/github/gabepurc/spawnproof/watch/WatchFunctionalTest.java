@@ -25,13 +25,14 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Watching a repo, end to end: the spawnproof command and a real daemon in a home of their own, a stand-in for GitHub's API,
  * and a mod repo whose Gradle wrapper is a stand-in too. Its one test fails when the commit has fail.txt; with broken.txt
- * the build fails before it, and with slow.txt it takes a minute.
+ * the build fails before it, and with slow.txt it takes a minute. While the home has a file named hold, every build waits.
  */
 class WatchFunctionalTest {
 	@TempDir
@@ -46,6 +47,7 @@ class WatchFunctionalTest {
 		# A stand-in for a mod's Gradle wrapper, running its one test.
 		echo "fake gradle $*"
 		if [ -f slow.txt ]; then sleep 60; fi
+		while [ -f "$SPAWNPROOF_HOME/hold" ]; do sleep 0.1; done
 		if [ -f broken.txt ]; then
 			echo "* What went wrong:"
 			echo "Compilation failed: the code doesn't build"
@@ -112,7 +114,9 @@ class WatchFunctionalTest {
 			Path kept = home.resolve("state/watch/test/mod/results/pr-1/runClientGameTest");
 			assertTrue(Files.readString(kept.resolve("args.txt")).contains("-Pspawnproof.games=2"), "the watch's options reach the build");
 
-			// A new commit that fails: a comment says what, and the status links to it.
+			// A new commit that fails: a comment says what, and the status links to it. Someone else's comment that starts like
+			// Spawnproof's is left alone.
+			github.comment(1, "someone", GitHub.MARKER + "\nQuoting Spawnproof");
 			String c = commit("Fall off", "fail.txt", null);
 			pr(1, c, false);
 			Map<String, Object> failed = awaitStatus(c, "failure");
@@ -172,13 +176,69 @@ class WatchFunctionalTest {
 				return now.size() > before && "success".equals(Json.str(now.get(now.size() - 1), "state"));
 			}, "#1 to be tested again");
 
+			// Merged while it's tested: the test goes on, and the commit gets its status.
+			Path hold = home.resolve("hold");
+			Files.writeString(hold, "");
+			String j = commit("Merge me", null, null);
+			pr(3, j, false);
+			awaitTesting(j);
+			github.close(3, true);
+			await(() -> github.lookups(3) > 0, "Spawnproof to see #3 was merged");
+			Files.delete(hold);
+			awaitStatus(j, "success");
+			await(() -> !cliQuiet(work, "status", "--json").contains("Pull request 3"), "#3 to be forgotten once tested");
+			assertTrue(github.statuses(j).stream().noneMatch(s -> "error".equals(Json.str(s, "state"))), github.statuses(j).toString());
+
+			// Closed without merging, while it waits and while it's tested: GitHub hears neither will be finished.
+			Files.writeString(hold, "");
+			String k = commit("Close me", null, null);
+			pr(4, k, false);
+			awaitTesting(k);
+			String l = commit("Close me too", null, null);
+			pr(5, l, false);
+			await(() -> github.statuses(l).stream().anyMatch(s -> Json.str(s, "description").startsWith("Waiting its turn")), "#5 to wait");
+			github.close(5, false);
+			assertEquals("Not tested: the pull request was closed", Json.str(awaitStatus(l, "error"), "description"));
+			github.close(4, false);
+			assertEquals("Not finished: the pull request was closed", Json.str(awaitStatus(k, "error"), "description"));
+			Files.delete(hold);
+
+			// Stopped while it's tested, and replaced while Spawnproof is down: the old commit hears it won't be finished.
+			Files.writeString(hold, "");
+			String m = commit("Interrupt me", null, null);
+			pr(6, m, false);
+			awaitTesting(m);
+			restart(() -> pr(6, commit("Replace me", null, null), false), hold);
+			String n = git(work, "rev-parse", "HEAD");
+			assertEquals("Not finished: a newer commit replaced it", Json.str(awaitStatus(m, "error"), "description"));
+			awaitStatus(n, "success");
+
+			// A fork's pull request asked for and left unfinished is finished when Spawnproof is back.
+			Files.writeString(hold, "");
+			String o = commit("From a stranger, slowly", null, null);
+			pr(7, o, true);
+			cli(work, "pr", "7");
+			awaitTesting(o);
+			restart(() -> {}, hold);
+			awaitStatus(o, "success");
+
 			String status = cli(work, "status");
 			assertTrue(status.contains("Watching (pull requests tested here)") && status.contains("test/mod") && status.contains("#1 passed"), status);
 
 			said = cli(work, "unwatch");
 			assertTrue(said.contains("Stopped watching test/mod"), said);
-			await(() -> !Files.exists(home.resolve("state/watch/test/mod")), "the clone to be deleted");
+			assertFalse(Files.exists(home.resolve("state/watch/test/mod")), "the clone is moved aside at once");
+			await(() -> isEmpty(home.resolve("state/watch/.unwatched")), "the clone to be deleted");
 			assertTrue(Files.readString(home.resolve("config/watching.json")).contains("\"watching\": []"), "nothing is watched");
+
+			// Watched again straight away: a fresh clone, tested as before.
+			cli(work, "watch", "--games", "2");
+			String q = commit("Watched again", null, null);
+			pr(1, q, false);
+			awaitStatus(q, "success");
+			Map<String, Object> theirs = github.allComments(1).stream().filter(x -> !FakeGitHub.LOGIN.equals(Json.str(Json.obj(x, "user"), "login")))
+				.findFirst().orElseThrow();
+			assertEquals(GitHub.MARKER + "\nQuoting Spawnproof", Json.str(theirs, "body"), "someone else's comment is left as it was");
 		} catch (AssertionError | Exception e) {
 			Path log = home.resolve("state/daemon.log");
 			System.out.println("---- daemon.log\n" + (Files.exists(log) ? Files.readString(log) : "(none)"));
@@ -258,7 +318,32 @@ class WatchFunctionalTest {
 		}
 	}
 
+	/** Stops Spawnproof while a build waits on the hold file, does something while it's down, and starts it again. */
+	private void restart(ThrowingRunnable whileDown, Path hold) throws Exception {
+		cli(work, "stop", "--force");
+		await(() -> cliQuiet(work, "status").contains("isn't running"), "the daemon to stop");
+		whileDown.run();
+		Files.deleteIfExists(hold);
+		cli(work, "watch", "--games", "2");
+	}
+
+	private interface ThrowingRunnable {
+		void run() throws Exception;
+	}
+
+	private static boolean isEmpty(Path dir) {
+		try (java.util.stream.Stream<Path> files = Files.list(dir)) {
+			return files.findAny().isEmpty();
+		} catch (IOException e) {
+			return !Files.exists(dir);
+		}
+	}
+
 	// ---- Waiting.
+
+	private void awaitTesting(String sha) throws InterruptedException {
+		await(() -> github.statuses(sha).stream().anyMatch(s -> Json.str(s, "description").startsWith("Testing on")), sha.substring(0, 7) + " to be tested");
+	}
 
 	private Map<String, Object> awaitStatus(String sha, String state) throws InterruptedException {
 		await(() -> github.statuses(sha).stream().anyMatch(s -> state.equals(Json.str(s, "state"))), sha.substring(0, 7) + " to be " + state);
@@ -276,6 +361,7 @@ class WatchFunctionalTest {
 	/** Enough of GitHub's API for a watched repo: its pull requests, statuses and comments, kept in memory. */
 	private static final class FakeGitHub {
 		static final String TOKEN = "test-token";
+		static final String LOGIN = "spawnproof-tester";
 		private static final Pattern STATUSES = Pattern.compile("/repos/test/mod/(?:statuses|commits)/(\\w+)(/statuses)?");
 		private static final Pattern COMMENTS = Pattern.compile("/repos/test/mod/issues/(\\d+)/comments");
 		private static final Pattern COMMENT = Pattern.compile("/repos/test/mod/issues/comments/(\\d+)");
@@ -287,6 +373,7 @@ class WatchFunctionalTest {
 		private final List<Map<String, Object>> statuses = new ArrayList<>();
 		private final List<Map<String, Object>> comments = new ArrayList<>();
 		private long nextId = 100;
+		private final Map<Long, Integer> lookups = new LinkedHashMap<>();
 
 		FakeGitHub() throws IOException {
 			server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -317,8 +404,42 @@ class WatchFunctionalTest {
 			return statuses.stream().filter(s -> sha.equals(s.get("sha"))).toList();
 		}
 
+		/** Spawnproof's comments on a pull request. */
 		synchronized List<Map<String, Object>> comments(long pr) {
+			return allComments(pr).stream().filter(c -> LOGIN.equals(Json.str(Json.obj(c, "user"), "login"))).toList();
+		}
+
+		synchronized List<Map<String, Object>> allComments(long pr) {
 			return comments.stream().filter(c -> Long.valueOf(pr).equals(c.get("pr"))).toList();
+		}
+
+		/** Someone else's comment. */
+		synchronized void comment(long pr, String login, String body) {
+			comments.add(newComment(pr, login, body));
+		}
+
+		private Map<String, Object> newComment(long pr, String login, String body) {
+			long id = nextId++;
+			Map<String, Object> c = new LinkedHashMap<>();
+			c.put("id", id);
+			c.put("pr", pr);
+			c.put("user", Map.of("login", login));
+			c.put("body", body);
+			c.put("html_url", "https://github.com/test/mod/pull/" + pr + "#issuecomment-" + id);
+			return c;
+		}
+
+		/** Closes a pull request, merged or not. */
+		synchronized void close(long number, boolean merged) {
+			Map<String, Object> p = pulls.get(number);
+			p.put("state", "closed");
+			p.put("merged", merged);
+			version++;
+		}
+
+		/** How many times Spawnproof has asked about this one pull request. */
+		synchronized int lookups(long number) {
+			return lookups.getOrDefault(number, 0);
 		}
 
 		private void handle(HttpExchange x) throws IOException {
@@ -331,7 +452,9 @@ class WatchFunctionalTest {
 			}
 			synchronized (this) {
 				Matcher m;
-				if (method.equals("GET") && path.equals("/repos/test/mod")) {
+				if (method.equals("GET") && path.equals("/user")) {
+					reply(x, 200, Map.of("login", LOGIN));
+				} else if (method.equals("GET") && path.equals("/repos/test/mod")) {
 					reply(x, 200, Map.of("full_name", "test/mod", "permissions", Map.of("push", true), "clone_url", cloneUrl));
 				} else if (method.equals("GET") && path.equals("/repos/test/mod/pulls")) {
 					String etag = "\"v" + version + "\"";
@@ -341,9 +464,11 @@ class WatchFunctionalTest {
 						return;
 					}
 					x.getResponseHeaders().add("ETag", etag);
-					reply(x, 200, new ArrayList<>(pulls.values()));
+					reply(x, 200, pulls.values().stream().filter(p -> "open".equals(p.get("state"))).toList());
 				} else if (method.equals("GET") && (m = PULL.matcher(path)).matches()) {
-					Map<String, Object> p = pulls.get(Long.parseLong(m.group(1)));
+					long number = Long.parseLong(m.group(1));
+					lookups.merge(number, 1, Integer::sum);
+					Map<String, Object> p = pulls.get(number);
 					reply(x, p == null ? 404 : 200, p == null ? Map.of("message", "Not Found") : p);
 				} else if ((m = STATUSES.matcher(path)).matches()) {
 					String sha = m.group(1);
@@ -360,22 +485,21 @@ class WatchFunctionalTest {
 				} else if ((m = COMMENTS.matcher(path)).matches()) {
 					long pr = Long.parseLong(m.group(1));
 					if (method.equals("POST")) {
-						long id = nextId++;
-						Map<String, Object> c = new LinkedHashMap<>();
-						c.put("id", id);
-						c.put("pr", pr);
-						c.put("body", Json.str(Json.parseObject(body), "body"));
-						c.put("html_url", "https://github.com/test/mod/pull/" + pr + "#issuecomment-" + id);
+						Map<String, Object> c = newComment(pr, LOGIN, Json.str(Json.parseObject(body), "body"));
 						comments.add(c);
 						reply(x, 201, c);
 					} else {
-						reply(x, 200, comments(pr));
+						reply(x, 200, allComments(pr));
 					}
 				} else if (method.equals("PATCH") && (m = COMMENT.matcher(path)).matches()) {
 					long id = Long.parseLong(m.group(1));
 					Map<String, Object> c = comments.stream().filter(k -> Long.valueOf(id).equals(k.get("id"))).findFirst().orElse(null);
 					if (c == null) {
 						reply(x, 404, Map.of("message", "Not Found"));
+						return;
+					}
+					if (!LOGIN.equals(Json.str(Json.obj(c, "user"), "login"))) {
+						reply(x, 403, Map.of("message", "Resource not accessible by integration"));
 						return;
 					}
 					c.put("body", Json.str(Json.parseObject(body), "body"));

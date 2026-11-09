@@ -200,7 +200,7 @@ final class PrTest {
 		try (Stream<Path> files = Files.walk(from)) {
 			for (Path f : (Iterable<Path>) files::iterator) {
 				Path rel = from.relativize(f);
-				if (rel.toString().equals("parts") || rel.startsWith("parts")) continue;
+				if (rel.startsWith("parts")) continue;
 				Path target = to.resolve(rel.toString());
 				if (Files.isDirectory(f)) Files.createDirectories(target);
 				else Files.copy(f, target, StandardCopyOption.REPLACE_EXISTING);

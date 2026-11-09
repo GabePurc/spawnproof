@@ -39,6 +39,9 @@ public final class GitHub {
 	private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build();
 	private String token;
 	private long tokenAt;
+	/** Who the token signs in as, once asked; null when GitHub won't say, as for an app's token. */
+	private String login;
+	private boolean loginKnown;
 
 	public GitHub(String api) {
 		this.api = api.replaceAll("/+$", "");
@@ -86,6 +89,26 @@ public final class GitHub {
 
 	private synchronized void forgetToken() {
 		token = null;
+		loginKnown = false;
+	}
+
+	/** Who the token signs in as, to tell Spawnproof's own comments from others'. Null if GitHub won't say (an app's token). */
+	String login() throws IOException {
+		synchronized (this) {
+			if (loginKnown) return login;
+		}
+		String found;
+		try {
+			found = Json.str(get("/user", null).object(), "login");
+		} catch (Problem e) {
+			if (e.code != 403 && e.code != 404) throw e;
+			found = null;
+		}
+		synchronized (this) {
+			login = found;
+			loginKnown = true;
+		}
+		return found;
 	}
 
 	private static String findToken() throws IOException {
@@ -195,9 +218,22 @@ public final class GitHub {
 		}
 	}
 
-	/** The open pull requests; a 304 reply, when they're unchanged since the reply with this ETag, costs nothing. */
+	/**
+	 * The open pull requests, every page of them. Given the ETag of an earlier reply, an unchanged list comes back as a 304,
+	 * which costs nothing. Only a list that fits on one page gets an ETag: a change on a later page leaves the first page's
+	 * ETag as it was.
+	 */
 	Reply openPulls(String repo, String etag) throws IOException {
-		return get("/repos/" + repo + "/pulls?state=open&per_page=100", etag);
+		String path = "/repos/" + repo + "/pulls?state=open&per_page=100&page=";
+		Reply first = get(path + 1, etag);
+		if (first.code() == 304) return first;
+		List<Map<String, Object>> all = new ArrayList<>(first.objects());
+		List<Map<String, Object>> page = first.objects();
+		for (int n = 2; page.size() == 100 && n <= 50; n++) {
+			page = get(path + n, null).objects();
+			all.addAll(page);
+		}
+		return new Reply(first.code(), all, all.size() < 100 ? first.etag() : null);
 	}
 
 	/** Spawnproof's latest status on a commit, as {state, description}, or null if it has none. */
@@ -218,25 +254,26 @@ public final class GitHub {
 		send("POST", "/repos/" + repo + "/statuses/" + sha, body);
 	}
 
-	/** Spawnproof's comment on a pull request, as {id, html_url}, or null. */
+	/**
+	 * Spawnproof's comment on a pull request, as {id, html_url}, or null. It's the one that starts with the marker and was
+	 * written by whoever Spawnproof signs in as: anyone can write the marker, and GitHub won't let another's comment be edited.
+	 */
 	Map<String, Object> findComment(String repo, long pr) throws IOException {
+		String me = login();
 		for (int page = 1; page <= 10; page++) {
 			List<Map<String, Object>> comments = get("/repos/" + repo + "/issues/" + pr + "/comments?per_page=100&page=" + page, null).objects();
 			for (Map<String, Object> c : comments) {
 				String body = Json.str(c, "body");
-				if (body != null && body.startsWith(MARKER)) return c;
+				String author = Json.str(Json.obj(c, "user"), "login");
+				if (body != null && body.startsWith(MARKER) && (me == null || me.equalsIgnoreCase(author))) return c;
 			}
 			if (comments.size() < 100) break;
 		}
 		return null;
 	}
 
-	/** Writes Spawnproof's comment on a pull request: edits the one it has, or adds one. Returns {id, html_url}. */
+	/** Writes Spawnproof's comment on a pull request: edits the one with this id, or adds one if null. Returns {id, html_url}. */
 	Map<String, Object> writeComment(String repo, long pr, Long id, String body) throws IOException {
-		if (id == null) {
-			Map<String, Object> found = findComment(repo, pr);
-			if (found != null) id = Json.num(found, "id", -1);
-		}
 		if (id != null && id > 0) {
 			try {
 				return send("PATCH", "/repos/" + repo + "/issues/comments/" + id, Map.of("body", body)).object();
