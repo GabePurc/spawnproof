@@ -5,6 +5,8 @@ Test infrastructure for Minecraft mods, growing into a test framework (roadmap: 
 - a machine-wide queue and hidden display for test games: the daemon, the Gradle plugin and the `spawnproof` command, in
   `src/`, with the daemon's testing of watched repos' pull requests in its `watch` package;
 - Spawnproof for Fabric, the test API and runner a mod's client game tests are written with, in `fabric/`.
+- the dashboard app, in `dashboard/`: a Tauri app (Rust, with a plain HTML and JavaScript window in `ui/`) that's a client
+  of the daemon's socket, like the command.
 
 The README says what each does for its users. `fabric/README.md` covers the test API.
 
@@ -31,6 +33,9 @@ The README says what each does for its users. `fabric/README.md` covers the test
 - `java -jar ../build/libs/spawnproof-0.4.0-SNAPSHOT.jar test --games 2`, in `fabric/` after `./gradlew build`, runs that
   self-test as a test run across two games with this checkout's plugin. It queues on the machine's daemon, which then
   runs this build until another build replaces it.
+- `cargo build` in `dashboard/` builds the dashboard app, apart from Gradle; `cargo test` and `cargo clippy` check it, as CI
+  does. On Linux it needs `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `librsvg2-dev` and `libxdo-dev`. Its window can be looked
+  at in a browser by standing in for `window.__TAURI__` with sample data.
 - `./gradlew :fabric:publishToMavenLocal` puts Spawnproof for Fabric in Maven Local, for trying it in a mod's build.
 - The Fabric half needs JDK 25 (Minecraft 26.x); the plugin is compiled for Java 17, so it loads in any mod's Gradle.
 

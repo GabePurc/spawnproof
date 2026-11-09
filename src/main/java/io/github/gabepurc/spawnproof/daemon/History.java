@@ -16,7 +16,7 @@ import java.util.Map;
 
 /** Every game that ran, one JSON line each: for "about 3 minutes left" and for looking back. Null file keeps it in memory. */
 public final class History {
-	private static final int KEEP = 500;
+	static final int KEEP = 500;
 	private final Path file;
 	private final ArrayDeque<Map<String, Object>> recent = new ArrayDeque<>();
 

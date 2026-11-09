@@ -4,6 +4,7 @@ import io.github.gabepurc.spawnproof.Dirs;
 import io.github.gabepurc.spawnproof.Json;
 import io.github.gabepurc.spawnproof.Wire;
 import io.github.gabepurc.spawnproof.client.Client;
+import io.github.gabepurc.spawnproof.daemon.DaemonConfig;
 
 import java.io.IOException;
 import java.io.PrintStream;
@@ -409,6 +410,8 @@ public final class TestRun {
 		try {
 			merged.write();
 			noteResults(out.resolve("results.json"));
+			// For the dashboard to look back on. Not on CI, nor with the queue off: nobody looks there.
+			if (queued()) KeptRuns.keep(out, who("test run"), DaemonConfig.load(Dirs.configFile()).keepRuns());
 		} catch (IOException e) {
 			say("couldn't write the results in " + out + ": " + e.getMessage());
 		}
@@ -473,7 +476,15 @@ public final class TestRun {
 		return Json.num(settings, "timeLimitMs", 0);
 	}
 
-	Map<String, Object> leaseRequest(Game game) {
+	/** Whose run this is, for the results the dashboard keeps. */
+	private Map<String, Object> who(String how) {
+		Map<String, Object> m = new LinkedHashMap<>();
+		for (String key : List.of("project", "task", "dir", "branch", "label")) m.put(key, settings.get(key));
+		m.put("how", how);
+		return m;
+	}
+
+		Map<String, Object> leaseRequest(Game game) {
 		Map<String, Object> request = new LinkedHashMap<>();
 		request.put("project", settings.get("project"));
 		request.put("task", settings.get("task") + " (game " + game.number + ")");
@@ -565,7 +576,7 @@ public final class TestRun {
 	 * Where the results go: where {@code spawnproof.output} points the game, or {@code spawnproof/} in the run folder. (The
 	 * games are given folders of their own; this is where theirs are merged.) The setting may be in an argument file.
 	 */
-	static Path resultsFolder(List<String> command, Path runDir) {
+	public static Path resultsFolder(List<String> command, Path runDir) {
 		Pattern p = Pattern.compile("-Dspawnproof\\.output=(\"[^\"]*\"|\\S+)");
 		String found = null;
 		for (String arg : command) {

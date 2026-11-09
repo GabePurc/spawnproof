@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Spawnproof</title>
+	<link rel="stylesheet" href="style.css">
+</head>
+<body>
+	<aside id="sidebar">
+		<div class="brand">
+			<img src="icon.png" alt="">
+			<span>Spawnproof</span>
+		</div>
+		<nav>
+			<button id="nav-live" class="nav-item" data-view="live">
+				<span class="nav-label">Live</span>
+				<span id="live-badge" class="badge" hidden></span>
+			</button>
+			<div class="nav-heading">Projects</div>
+			<div id="nav-projects"></div>
+		</nav>
+		<footer id="daemon-info"></footer>
+	</aside>
+	<main>
+		<div id="offline" class="banner" hidden></div>
+		<section id="view"></section>
+	</main>
+	<div id="lightbox" hidden>
+		<figure>
+			<img id="lightbox-image" alt="">
+			<figcaption id="lightbox-caption"></figcaption>
+		</figure>
+	</div>
+	<script src="app.js"></script>
+</body>
+</html>

@@ -1,6 +1,9 @@
 package io.github.gabepurc.spawnproof.gradle;
 
+import io.github.gabepurc.spawnproof.Dirs;
 import io.github.gabepurc.spawnproof.client.Client;
+import io.github.gabepurc.spawnproof.daemon.DaemonConfig;
+import io.github.gabepurc.spawnproof.run.KeptRuns;
 import org.gradle.api.GradleException;
 import org.gradle.api.Task;
 import org.gradle.api.logging.Logger;
@@ -13,6 +16,8 @@ import org.gradle.tooling.events.task.TaskFinishEvent;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.nio.channels.ClosedByInterruptException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -22,6 +27,10 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public abstract class LeaseService implements BuildService<BuildServiceParameters.None>, OperationCompletionListener, AutoCloseable {
 	private final Map<String, Client.Lease> leases = new ConcurrentHashMap<>();
+	private final Map<String, Keep> toKeep = new ConcurrentHashMap<>();
+
+	/** A test game's results folder, and whose they are, to keep once its task is done if the game wrote any. */
+	private record Keep(Path results, Map<String, Object> who, long startedAt) {}
 	private final TimeLimit timeLimit = new TimeLimit();
 	private volatile boolean warnedUnavailable;
 	private volatile boolean warnedNoDisplay;
@@ -53,7 +62,12 @@ public abstract class LeaseService implements BuildService<BuildServiceParameter
 		}
 	}
 
-	TimeLimit timeLimit() {
+	/** Keeps the results the game writes in {@code results} for the dashboard, once its task is done (KeptRuns). */
+	void keepResultsOf(String path, Path results, Map<String, Object> who) {
+		toKeep.put(path, new Keep(results, who, System.currentTimeMillis()));
+	}
+
+		TimeLimit timeLimit() {
 		return timeLimit;
 	}
 
@@ -64,7 +78,20 @@ public abstract class LeaseService implements BuildService<BuildServiceParameter
 			timeLimit.stop(path);
 			Client.Lease lease = leases.remove(path);
 			if (lease != null) lease.close();
+			Keep keep = toKeep.remove(path);
+			if (keep != null) keep(keep);
 		}
+	}
+
+	/** Passed or failed, the task's game may have written results; ones left from an earlier run aren't this run's. */
+	private static void keep(Keep keep) {
+		try {
+			Path json = keep.results().resolve("results.json");
+			if (!Files.isRegularFile(json) || Files.getLastModifiedTime(json).toMillis() < keep.startedAt()) return;
+		} catch (IOException e) {
+			return;
+		}
+		KeptRuns.keep(keep.results(), keep.who(), DaemonConfig.load(Dirs.configFile()).keepRuns());
 	}
 
 	@Override

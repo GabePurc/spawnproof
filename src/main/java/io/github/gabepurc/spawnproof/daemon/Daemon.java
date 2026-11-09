@@ -4,6 +4,7 @@ import io.github.gabepurc.spawnproof.Dirs;
 import io.github.gabepurc.spawnproof.Json;
 import io.github.gabepurc.spawnproof.Version;
 import io.github.gabepurc.spawnproof.Wire;
+import io.github.gabepurc.spawnproof.run.KeptRuns;
 import io.github.gabepurc.spawnproof.watch.Watch;
 import io.github.gabepurc.spawnproof.watch.Watcher;
 
@@ -235,6 +236,23 @@ public final class Daemon {
 					String.valueOf(request.getOrDefault("path", "")), Json.strings(request, "args"), System.currentTimeMillis())));
 				case "unwatch" -> wire.send(watcher.unwatch(Json.str(request, "repo")));
 				case "test-pr" -> wire.send(watcher.testPr(Json.str(request, "repo"), Json.num(request, "pr", -1)));
+				// For the dashboard; the command and an MCP server can ask the same.
+				case "follow" -> follow(wire);
+				case "projects" -> wire.send(Map.of("type", "projects", "projects",
+					Projects.list(KeptRuns.all(), history.last(History.KEEP), Dirs.state().resolve("watch"))));
+				case "runs" -> wire.send(Map.of("type", "runs", "runs",
+					KeptRuns.list(Json.str(request, "project"), Json.str(request, "dir"), (int) Json.num(request, "limit", 50))));
+				case "run" -> {
+					Map<String, Object> run = KeptRuns.read(Json.str(request, "id"));
+					if (run == null) {
+						wire.send(Map.of("type", "error", "message", "no kept run " + Json.str(request, "id") + " (only the last " + config.keepRuns()
+							+ " runs of each task in each checkout are kept)"));
+						return;
+					}
+					Map<String, Object> m = new LinkedHashMap<>(run);
+					m.put("type", "run");
+					wire.send(m);
+				}
 				default -> wire.send(Map.of("type", "error", "message", "unknown request: " + type));
 			}
 		} catch (ClosedChannelException e) {
@@ -303,7 +321,22 @@ public final class Daemon {
 		}
 	}
 
-	private static void trySend(Wire wire, Map<String, Object> message) {
+	/**
+	 * The status every second, for as long as the other side listens: the dashboard's live view. A connection that's open
+	 * counts as something to do, so the daemon stays up while a dashboard is open.
+	 */
+	private void follow(Wire wire) throws IOException {
+		while (!stopping) {
+			wire.send(status());
+			try {
+				Thread.sleep(1000);
+			} catch (InterruptedException e) {
+				return;
+			}
+		}
+	}
+
+		private static void trySend(Wire wire, Map<String, Object> message) {
 		try {
 			wire.send(message);
 		} catch (IOException ignored) {
@@ -330,6 +363,7 @@ public final class Daemon {
 		s.put("recent", history.last(5));
 		s.put("watching", watcher.describe());
 		s.put("testing", watcher.testing());
+		s.put("runsFolder", KeptRuns.folder().toAbsolutePath().toString());
 		return s;
 	}
 }
