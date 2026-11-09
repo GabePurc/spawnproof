@@ -23,7 +23,7 @@ import java.util.stream.Stream;
  * (Spawnproof for Fabric's {@code parts/}): the test as results.json has it, its piece of report.txt and its test suite for
  * junit.xml. This puts them together. Tests that no game finished get a part made up here, saying why.
  */
-final class MergedResults {
+public final class MergedResults {
 	/** results.json's format version, the same as a single game's: a test run only adds fields. */
 	static final int FORMAT_VERSION = 1;
 
@@ -228,24 +228,28 @@ final class MergedResults {
 	}
 
 	String summaryLine() {
-		Map<String, Object> c = counts();
-		StringBuilder s = new StringBuilder(plural(parts.size(), "test")).append(": ");
-		List<String> bits = new ArrayList<>();
-		for (String k : List.of("passed", "failed", "errors", "notRun")) {
-			long n = ((Number) c.get(k)).longValue();
-			if (n > 0) bits.add(n + " " + (k.equals("notRun") ? "not run" : k.equals("errors") ? (n == 1 ? "error" : "errors") : k));
-		}
-		s.append(bits.isEmpty() ? "none" : String.join(", ", bits));
-		long checks = ((Number) c.get("checks")).longValue();
-		long failed = ((Number) c.get("failedChecks")).longValue();
-		s.append(". ").append(plural(checks, "check"));
-		if (failed > 0) s.append(", ").append(failed).append(" failed");
+		StringBuilder s = new StringBuilder(countsLine(counts()));
 		s.append(". ").append(duration(endedAt - startedAt));
 		long played = games.stream().filter(g -> g.exitCode() != null).count();
 		s.append(played == 1 ? " in 1 game" : " across " + played + " games");
 		String clockName = Json.str(run, "clockName");
 		if (clockName != null && ticks() > 0) s.append(String.format(Locale.ROOT, ", %s at %.0f ticks a second", clockName, ticksPerSecond()));
 		return s.append('.').toString();
+	}
+
+	/** "5 tests: 2 passed, 1 failed, 2 errors. 14 checks, 4 failed", from results.json's counts. */
+	public static String countsLine(Map<String, Object> c) {
+		StringBuilder s = new StringBuilder(plural(Json.num(c, "tests", 0), "test")).append(": ");
+		List<String> bits = new ArrayList<>();
+		for (String k : List.of("passed", "failed", "errors", "notRun")) {
+			long n = Json.num(c, k, 0);
+			if (n > 0) bits.add(n + " " + (k.equals("notRun") ? "not run" : k.equals("errors") ? (n == 1 ? "error" : "errors") : k));
+		}
+		s.append(bits.isEmpty() ? "none" : String.join(", ", bits));
+		long failed = Json.num(c, "failedChecks", 0);
+		s.append(". ").append(plural(Json.num(c, "checks", 0), "check"));
+		if (failed > 0) s.append(", ").append(failed).append(" failed");
+		return s.toString();
 	}
 
 	String report() {
@@ -298,37 +302,48 @@ final class MergedResults {
 		console.println("[spawnproof] " + summaryLine());
 		for (String n : notes) console.println("[spawnproof] " + n);
 		for (String p : problems) console.println("[spawnproof] PROBLEM: " + p);
-		for (Part p : parts) {
-			Map<String, Object> t = p.result();
-			String name = p.name();
-			String status = p.status();
+		List<Map<String, Object>> tests = new ArrayList<>();
+		for (Part p : parts) tests.add(p.result());
+		for (String line : failureLines(tests)) console.println("[spawnproof] " + line);
+		for (GameSummary g : games) if (g.stopped() != null && g.exitCode() != null) console.println("[spawnproof] " + describe(g));
+		console.println("[spawnproof] Results: " + out.resolve("results.json") + " (report.txt, junit.xml, screenshots/ beside it)");
+	}
+
+	/**
+	 * What went wrong in these tests (results.json's), a line each: "FAIL ride > Mounting > on the horse: expected true, got
+	 * false", "ERROR hat: ...", "NOT RUN ...". At most ten failed checks a test.
+	 */
+	public static List<String> failureLines(List<Map<String, Object>> tests) {
+		List<String> lines = new ArrayList<>();
+		for (Map<String, Object> t : tests) {
+			String name = Json.str(t, "name");
+			String status = Json.str(t, "status");
 			if ("passed".equals(status)) continue;
 			if ("not-run".equals(status)) {
-				console.println("[spawnproof] NOT RUN " + name + ": " + Json.str(t, "stopReason"));
+				lines.add("NOT RUN " + name + ": " + Json.str(t, "stopReason"));
 				continue;
 			}
 			int shown = 0;
 			for (Map<String, Object> c : Json.list(t, "checks")) {
 				if (Json.bool(c, "ok")) continue;
 				if (shown++ == 10) {
-					console.println("[spawnproof]   ... " + (Json.num(t, "failedChecks", 0) - 10) + " more failed checks in " + name);
+					lines.add("  ... " + (Json.num(t, "failedChecks", 0) - 10) + " more failed checks in " + name);
 					break;
 				}
 				String section = Json.str(c, "section");
-				console.println("[spawnproof] FAIL " + name + (section != null ? " > " + section : "") + " > " + Json.str(c, "name") + describeCheck(c));
+				lines.add("FAIL " + name + (section != null ? " > " + section : "") + " > " + Json.str(c, "name") + describeCheck(c));
 			}
 			String stop = Json.str(t, "stopReason");
-			if (stop != null && !stop.startsWith("required check failed: ")) console.println("[spawnproof] STOPPED " + name + ": " + stop);
+			if (stop != null && !stop.startsWith("required check failed: ")) lines.add("STOPPED " + name + ": " + stop);
 			Map<String, Object> error = Json.obj(t, "error");
 			if (!error.isEmpty()) {
 				String at = String.valueOf(error.getOrDefault("stack", "")).lines().map(String::strip).filter(l -> l.startsWith("at ")).findFirst().orElse("");
 				String type = Json.str(error, "type");
-				console.println("[spawnproof] ERROR " + name + ": " + ("spawnproof".equals(type) ? "" : type + ": ") + Json.str(error, "message")
+				lines.add("ERROR " + name + ": " + ("spawnproof".equals(type) ? "" : type + ": ") + Json.str(error, "message")
 					+ (at.isEmpty() ? "" : " (" + at + ")"));
 			}
 		}
-		for (GameSummary g : games) if (g.stopped() != null && g.exitCode() != null) console.println("[spawnproof] " + describe(g));
-		console.println("[spawnproof] Results: " + out.resolve("results.json") + " (report.txt, junit.xml, screenshots/ beside it)");
+		return lines;
 	}
 
 	private static String describeCheck(Map<String, Object> c) {
@@ -364,14 +379,14 @@ final class MergedResults {
 		for (String sub : List.of("screenshots", "files", "parts")) deleteTree(out.resolve(sub));
 	}
 
-	static void deleteTree(Path root) throws IOException {
+	public static void deleteTree(Path root) throws IOException {
 		if (!Files.exists(root)) return;
 		try (Stream<Path> walk = Files.walk(root)) {
 			for (Path p : walk.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p);
 		}
 	}
 
-	static String plural(long n, String one) {
+	public static String plural(long n, String one) {
 		return n + " " + (n == 1 ? one : one + "s");
 	}
 

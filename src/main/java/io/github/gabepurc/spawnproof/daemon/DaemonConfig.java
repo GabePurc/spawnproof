@@ -24,6 +24,10 @@ public final class DaemonConfig {
 	volatile int idleMinutes = 60;
 	/** The hidden display closes after this long with no game on it. */
 	volatile int displayIdleMinutes = 15;
+	/** How often a watched repo's pull requests are looked at for new commits. */
+	volatile int watchSeconds = 60;
+	/** Where GitHub's API is: another address for GitHub Enterprise, or for the tests' stand-in. */
+	volatile String githubApi = "https://api.github.com";
 
 	public static DaemonConfig load(Path file) {
 		DaemonConfig c = new DaemonConfig();
@@ -65,8 +69,14 @@ public final class DaemonConfig {
 				case "holdWhilePlaying" -> holdWhilePlaying = bool(value);
 				case "idleMinutes" -> idleMinutes = range(value, 1, 7 * 24 * 60);
 				case "displayIdleMinutes" -> displayIdleMinutes = range(value, 1, 7 * 24 * 60);
+				case "watchSeconds" -> watchSeconds = range(value, 1, 3600);
+				case "githubApi" -> {
+					if (!value.matches("https?://\\S+")) return "githubApi is an address, like https://api.github.com";
+					githubApi = value.replaceAll("/+$", "");
+				}
 				default -> {
-					return "unknown setting '" + key + "' (slots, display, resolution, holdWhilePlaying, idleMinutes, displayIdleMinutes)";
+					return "unknown setting '" + key + "' (slots, display, resolution, holdWhilePlaying, idleMinutes, displayIdleMinutes, watchSeconds, "
+						+ "githubApi)";
 				}
 			}
 		} catch (IllegalArgumentException e) {
@@ -100,6 +110,16 @@ public final class DaemonConfig {
 		m.put("holdWhilePlaying", holdWhilePlaying);
 		m.put("idleMinutes", idleMinutes);
 		m.put("displayIdleMinutes", displayIdleMinutes);
+		m.put("watchSeconds", watchSeconds);
+		m.put("githubApi", githubApi);
 		return m;
+	}
+
+	public int watchSeconds() {
+		return watchSeconds;
+	}
+
+	public String githubApi() {
+		return githubApi;
 	}
 }

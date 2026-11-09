@@ -112,6 +112,13 @@ public final class Client {
 		}
 	}
 
+	/** Sends one request to a daemon of this version, replacing an older one first if it has nothing running. */
+	public static Map<String, Object> callCurrent(Map<String, Object> request, Consumer<String> progress) throws IOException {
+		try (Connection c = connectCurrent(progress)) {
+			return call(c, request);
+		}
+	}
+
 	private static Map<String, Object> call(Connection c, Map<String, Object> request) throws IOException {
 		c.wire.send(request);
 		Map<String, Object> reply = c.wire.read();
@@ -161,7 +168,8 @@ public final class Client {
 			}
 			if (idle(status)) {
 				try {
-					call(Map.of("type", "stop"), false);
+					// Saying it's a replacement: a daemon watching repos turns down any other stop, and this one picks them up.
+					call(Map.of("type", "stop", "replace", true), false);
 					waitForExit();
 				} catch (IOException e) {
 					// It got busy, or another client replaced it first: look again.
@@ -177,6 +185,8 @@ public final class Client {
 
 	private static boolean idle(Map<String, Object> status) {
 		for (String key : List.of("running", "waiting", "playing")) if (!Json.list(status, key).isEmpty()) return false;
+		// A pull request being tested is between games much of the time: compiling, or checking out its commit.
+		if (!Json.strings(status, "testing").isEmpty()) return false;
 		return true;
 	}
 

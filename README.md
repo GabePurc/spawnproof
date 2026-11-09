@@ -34,6 +34,8 @@ faster than normal on a clock that counts drawn frames.
 - **A mod's tests across several games.** `spawnproof test` shares a mod's client game tests out between several games at
   once, the longest first by past runs, and merges their results into one set. `--only-failures` reruns what failed last
   time.
+- **Pull requests tested on your machine.** `spawnproof watch` tests each new commit on a mod's GitHub pull requests here,
+  not on GitHub's machines, and puts the result on the pull request as a check you can require before merging.
 
 ## Setup
 
@@ -58,7 +60,7 @@ plugins {
 ```
 
 To run changes that aren't released yet, build a clone (`./gradlew build`) and install
-`build/libs/spawnproof-0.3.0-SNAPSHOT.jar` the same way.
+`build/libs/spawnproof-0.4.0-SNAPSHOT.jar` the same way.
 
 ### The hidden display (Linux)
 
@@ -158,6 +160,48 @@ What it needs and how it goes:
   their checkout.
 - On CI, or with the queue off, the games run without waiting their turn, as games do without Spawnproof.
 
+## Testing pull requests on your machine: spawnproof watch
+
+New in 0.4, which isn't released yet. In a mod's folder:
+
+```bash
+spawnproof watch                  # test each new commit on this repo's pull requests, as spawnproof test would
+spawnproof watch --games 3 hat    # with these spawnproof test options
+spawnproof pr 42                  # test pull request #42 now: one from a fork, or one to run again
+spawnproof unwatch                # stop
+```
+
+Spawnproof then looks at the repo's open pull requests on GitHub every minute, and tests each new commit on this machine.
+GitHub hears how it went:
+
+- The commit gets a status named `spawnproof`: waiting, testing, then passed or failed, with how many tests failed. Add
+  `spawnproof` to a branch's required status checks on GitHub, and a pull request can't be merged until its tests pass.
+- When a run doesn't pass, a comment on the pull request says what failed, or what Gradle said if the build failed before
+  the tests. Spawnproof edits that one comment after each run, so it also says when they pass again. The full results
+  stay on your machine, and the comment says where.
+
+How it goes:
+
+- The tests run in a clone of the repo of their own, in Spawnproof's state folder (`watch/<owner>/<repo>/`), so your
+  checkouts are left alone. The clone is kept between runs, build folders and all, so Gradle and Loom don't start over
+  each time.
+- Their games wait their turn in the queue like any other build's, and your playing comes first as always. Each repo has
+  one pull request tested at a time, and a newer commit stops the test of an older one. A pull request that's merged
+  while it's tested is still tested, so its commit gets its check; one closed without merging is let go.
+- Pull requests from forks are left alone until you ask (`spawnproof pr <number>`): testing one runs a stranger's code on
+  your machine, so read it first. Those from the repo's own branches are tested on their own, so anyone who can push to
+  the repo can run code on your machine; for most mods that's only you.
+- Your machine asks GitHub; nothing needs to reach your machine from the internet. While it's off, a pull request's check
+  waits. Spawnproof catches up when it starts again, and tests again whatever it was in the middle of.
+- It signs in to GitHub as you, with the token `gh auth token` gives ([GitHub CLI](https://cli.github.com/)), or a token
+  in `~/.config/spawnproof/github-token`. It needs write access to the repo, to set statuses and comment; `spawnproof
+  watch` checks for that first.
+- The daemon stays running while it watches anything, instead of stopping after an idle hour, and a build with an older
+  Spawnproof uses it as it is rather than swapping in its own version. `spawnproof stop` needs `--force` while anything is
+  watched. On Linux, `spawnproof install --service` adds a systemd user service that starts it when you log in, too.
+- `spawnproof status` lists what's watched, what's being tested, and what each pull request came to.
+- GitHub's own CI is left as it is: it goes on running what it runs, and a build on CI still runs its games directly.
+
 ## The spawnproof command
 
 ```text
@@ -168,6 +212,9 @@ spawnproof display xvfb      which hidden display to use
 spawnproof config            every setting (slots, display, resolution, holdWhilePlaying, idleMinutes, ...)
 spawnproof run -- <command>  run any command as a queued game: it waits its turn and gets the hidden display
 spawnproof test              in a mod's folder: run its tests across games, with one set of results
+spawnproof watch | unwatch   in a mod's folder: test its pull requests' new commits here, and tell GitHub / stop
+spawnproof pr <number>       in a mod's folder: test a pull request now
+spawnproof install --service start the daemon when you log in (Linux, systemd), for watched repos
 spawnproof stop              stop the daemon (the next game starts it again)
 ```
 
@@ -204,11 +251,17 @@ slot comes, the daemon starts the hidden display if it isn't up, and the action 
 the task finishes, or the build ends, or the process dies, the connection closes and the slot frees.
 
 The first build that needs the daemon starts it, from a copy of the plugin's jar, in a session of its own (so Ctrl+C in a
-terminal can't take other builds' games with it). It exits after an hour with nothing to do. A daemon of another version
-is replaced once it has nothing running.
+terminal can't take other builds' games with it). It exits after an hour with nothing to do, unless it's watching a repo.
+A daemon of another version is replaced once it has nothing running.
 
 Settings live in `~/.config/spawnproof/config.properties`; logs and history (one JSON line per game) in
 `~/.local/state/spawnproof/`.
+
+A watched repo (`spawnproof watch`, kept in `~/.config/spawnproof/watching.json`) is looked at every `watchSeconds` (60).
+The daemon asks GitHub for its open pull requests with the last answer's ETag, so an answer that hasn't changed costs
+nothing against GitHub's rate limit. A new commit is fetched into the repo's clone (`refs/pull/<n>/head`), checked out, and
+tested by running the mod's Gradle wrapper as `spawnproof test` does, with `SPAWNPROOF_RESULTS_LOG` naming a file each test
+run adds the place of its results to. What each pull request came to is kept in `prs.json` beside the clone.
 
 A test run (`spawnproof test`) swaps the game task's java for a small script, so it gets the game's command line just as the
 build made it, classpath and all. The script starts the run, which waits for a slot for each game and starts the command
