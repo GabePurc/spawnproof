@@ -39,7 +39,7 @@ dependencies {
 ```
 
 To try changes that aren't released yet, run `./gradlew :fabric:publishToMavenLocal` in a clone of this repository, then
-depend on `0.4.0-SNAPSHOT` from Maven Local:
+depend on `0.5.0-SNAPSHOT` from Maven Local:
 
 ```groovy
 repositories {

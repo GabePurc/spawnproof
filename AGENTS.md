@@ -30,7 +30,7 @@ The README says what each does for its users. `fabric/README.md` covers the test
 - `./gradlew :fabric:runClientGameTest` runs Spawnproof for Fabric's self-test in a real game.
   `-Pspawnproof.tests=selftest-failing,plain-fabric` runs the tests that fail, throw and leave a world open on purpose.
   Results land in `fabric/build/run/clientGameTest/spawnproof/`.
-- `java -jar ../build/libs/spawnproof-0.4.0-SNAPSHOT.jar test --games 2`, in `fabric/` after `./gradlew build`, runs that
+- `java -jar ../build/libs/spawnproof-0.5.0-SNAPSHOT.jar test --games 2`, in `fabric/` after `./gradlew build`, runs that
   self-test as a test run across two games with this checkout's plugin. It queues on the machine's daemon, which then
   runs this build until another build replaces it.
 - `cargo build` in `dashboard/` builds the dashboard app, apart from Gradle; `cargo test` and `cargo clippy` check it, as CI
@@ -41,8 +41,8 @@ The README says what each does for its users. `fabric/README.md` covers the test
 
 ## Releasing
 
-- `version` in `gradle.properties` is the next release, as a snapshot (`0.4.0-SNAPSHOT`).
-- A release is a GitHub release on `main` tagged `v0.4.0`, made only when the user asks: Maven Central keeps every version
+- `version` in `gradle.properties` is the next release, as a snapshot (`0.5.0-SNAPSHOT`).
+- A release is a GitHub release on `main` tagged `v0.5.0`, made only when the user asks: Maven Central keeps every version
   for good. `.github/workflows/release.yml` checks the tag against `gradle.properties`, then puts each loader's library on
   Maven Central (`spawnproof-fabric` so far), the plugin on the Gradle Plugin Portal and the jar on the release. If one of those jobs fails, rerun only
   that job.
@@ -51,7 +51,7 @@ The README says what each does for its users. `fabric/README.md` covers the test
   - `CENTRAL_USERNAME` and `CENTRAL_PASSWORD`, a Central Portal user token;
   - `SIGNING_KEY`, an armored private key whose public half is on keyserver.ubuntu.com, and `SIGNING_PASSWORD`;
   - `GRADLE_PUBLISH_KEY` and `GRADLE_PUBLISH_SECRET`, from the Plugin Portal.
-- To see what would go to Central without sending it: `SIGNING_KEY=... ./gradlew -Pversion=0.4.0 nmcpZipAggregation`, then
+- To see what would go to Central without sending it: `SIGNING_KEY=... ./gradlew -Pversion=0.5.0 nmcpZipAggregation`, then
   look in `build/nmcp/zip/`.
 
 ## Style
