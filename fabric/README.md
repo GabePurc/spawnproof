@@ -7,7 +7,7 @@ frames, not real time.
 It builds on Fabric's own client game test API (`fabric-client-gametest-api-v1`): worlds, input, waiting for ticks and
 screenshots are Fabric's. Spawnproof adds what a test suite needs around them.
 
-Version 0.3. Minecraft 26.3 on Fabric for now.
+Version 0.4. Minecraft 26.3 on Fabric for now.
 
 ## What it does
 
@@ -34,12 +34,12 @@ set up (`fabricApi { configureTests { ... } }`):
 
 ```groovy
 dependencies {
-	gametestImplementation 'io.github.gabepurc:spawnproof-fabric:0.3.0'
+	gametestImplementation 'io.github.gabepurc:spawnproof-fabric:0.4.0'
 }
 ```
 
 To try changes that aren't released yet, run `./gradlew :fabric:publishToMavenLocal` in a clone of this repository, then
-depend on `0.3.0-SNAPSHOT` from Maven Local:
+depend on `0.4.0-SNAPSHOT` from Maven Local:
 
 ```groovy
 repositories {
