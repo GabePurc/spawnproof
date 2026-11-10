@@ -62,7 +62,7 @@ plugins {
 ```
 
 To run changes that aren't released yet, build a clone (`./gradlew build`) and install
-`build/libs/spawnproof-0.4.0-SNAPSHOT.jar` the same way.
+`build/libs/spawnproof-0.5.0-SNAPSHOT.jar` the same way.
 
 ### The hidden display (Linux)
 
