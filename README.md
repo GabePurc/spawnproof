@@ -7,7 +7,7 @@ it runs them on a hidden display, so they don't pop up on your desktop.
 It's made for mod developers who run several builds at once: a few worktrees, a few AI coding sessions, or just you and a
 test run. Each build used to start its games whenever it liked. With Spawnproof, they take turns.
 
-Version 0.3. Works with Fabric Loom and NeoForge ModDevGradle builds. The queue works anywhere Java 17 runs;
+Version 0.4. Works with Fabric Loom and NeoForge ModDevGradle builds. The queue works anywhere Java 17 runs;
 the hidden display is Linux only for now.
 
 Spawnproof is growing into a test framework for Minecraft mods. Its first piece is [Spawnproof for Fabric](fabric/README.md):
@@ -36,14 +36,16 @@ faster than normal on a clock that counts drawn frames.
   time.
 - **Pull requests tested on your machine.** `spawnproof watch` tests each new commit on a mod's GitHub pull requests here,
   not on GitHub's machines, and puts the result on the pull request as a check you can require before merging.
+- **A dashboard.** `spawnproof dashboard` opens a desktop app that shows what's running and waiting, and each mod's past
+  test runs with their checks, errors and screenshots.
 
 ## Setup
 
-Download `spawnproof-0.3.0.jar` from the [latest release](https://github.com/GabePurc/spawnproof/releases/latest) and install
+Download `spawnproof-0.4.0.jar` from the [latest release](https://github.com/GabePurc/spawnproof/releases/latest) and install
 it for every build on your machine:
 
 ```bash
-java -jar spawnproof-0.3.0.jar install --init-script
+java -jar spawnproof-0.4.0.jar install --init-script
 ```
 
 That puts a `spawnproof` command in `~/.local/bin` and an init script in `~/.gradle/init.d/` that applies the plugin to every
@@ -55,7 +57,7 @@ Or a build can apply it itself, from the Gradle Plugin Portal, in `settings.grad
 
 ```groovy
 plugins {
-	id 'io.github.gabepurc.spawnproof' version '0.3.0'
+	id 'io.github.gabepurc.spawnproof' version '0.4.0'
 }
 ```
 
@@ -162,7 +164,7 @@ What it needs and how it goes:
 
 ## Testing pull requests on your machine: spawnproof watch
 
-New in 0.4, which isn't released yet. In a mod's folder:
+In a mod's folder:
 
 ```bash
 spawnproof watch                  # test each new commit on this repo's pull requests, as spawnproof test would
@@ -204,7 +206,7 @@ How it goes:
 
 ## The dashboard
 
-New in 0.4, which isn't released yet. A desktop app for looking at what Spawnproof is doing and has done:
+A desktop app for looking at what Spawnproof is doing and has done:
 
 ```bash
 spawnproof dashboard
