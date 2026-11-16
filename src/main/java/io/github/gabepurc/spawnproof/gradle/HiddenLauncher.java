@@ -1,21 +1,18 @@
 package io.github.gabepurc.spawnproof.gradle;
 
 import io.github.gabepurc.spawnproof.Dirs;
-import org.gradle.api.Project;
 import org.gradle.api.Task;
 import org.gradle.api.file.RegularFile;
-import org.gradle.api.plugins.JavaPluginExtension;
 import org.gradle.api.provider.Property;
-import org.gradle.api.provider.Provider;
 import org.gradle.api.tasks.Internal;
 import org.gradle.api.tasks.Nested;
 import org.gradle.jvm.toolchain.JavaInstallationMetadata;
 import org.gradle.jvm.toolchain.JavaLauncher;
-import org.gradle.jvm.toolchain.JavaToolchainService;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.lang.reflect.InvocationTargetException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -27,7 +24,8 @@ import java.util.HexFormat;
 /**
  * Loom's production runs (ClientProductionRunTask) start java with Gradle's own environment and take no environment of
  * their own, so DISPLAY can't be set on them. Instead their java is a small script that sets it from the hidden display's
- * file, then runs the real java. It takes the place of Loom's default launcher, which is the project's toolchain.
+ * file, then runs the real java: the one the task was going to use, whether that's Loom's default (the project's toolchain)
+ * or one the build chose itself, as a mod does to run each Minecraft version on the Java its players use.
  */
 final class HiddenLauncher implements JavaLauncher {
 	private final JavaLauncher delegate;
@@ -36,20 +34,23 @@ final class HiddenLauncher implements JavaLauncher {
 		this.delegate = delegate;
 	}
 
+	/**
+	 * Puts the script in place of the task's java, and says whether it's there. Called once the build has configured its tasks
+	 * (a launcher the build sets would win over one set any earlier) and before they run (it can't change after that).
+	 */
 	@SuppressWarnings("unchecked")
-	static void install(Task task, Project project, Provider<Boolean> wanted) {
-		JavaPluginExtension java = project.getExtensions().findByType(JavaPluginExtension.class);
-		JavaToolchainService toolchains = project.getExtensions().findByType(JavaToolchainService.class);
-		if (java == null || toolchains == null) return;
-		Property<JavaLauncher> launcher;
+	static boolean wrap(Task task) {
 		try {
-			launcher = (Property<JavaLauncher>) task.getClass().getMethod("getJavaLauncher").invoke(task);
-		} catch (ReflectiveOperationException | ClassCastException e) {
-			return;
+			Property<JavaLauncher> launcher = (Property<JavaLauncher>) task.getClass().getMethod("getJavaLauncher").invoke(task);
+			JavaLauncher chosen = launcher.get();
+			if (!(chosen instanceof HiddenLauncher)) launcher.set(new HiddenLauncher(chosen));
+			return true;
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			Throwable cause = e instanceof InvocationTargetException && e.getCause() != null ? e.getCause() : e;
+			task.getLogger().warn("Spawnproof: couldn't put {} on the hidden display, so its window opens on your desktop ({}). "
+				+ "`spawnproof run -- <your gradle command>` hides everything the command starts.", task.getPath(), cause.toString());
+			return false;
 		}
-		Provider<JavaLauncher> original = toolchains.launcherFor(java.getToolchain());
-		// A convention, so a launcher the build sets itself still wins.
-		launcher.convention(original.zip(wanted, (l, w) -> w ? new HiddenLauncher(l) : l));
 	}
 
 	@Override

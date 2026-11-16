@@ -86,6 +86,8 @@ public abstract class SpawnproofPlugin implements Plugin<PluginAware> {
 		// - the command line's settings for Spawnproof for Fabric go to every test game;
 		// - a test game's Gradle timeout would start counting while it waits in line, so Spawnproof takes it over and counts
 		//   it from when the game starts (TimeLimit);
+		// - a hidden production run's java becomes a script that puts it on the hidden display (HiddenLauncher), whichever
+		//   java the build chose for it;
 		// - with -Pspawnproof.games or -Pspawnproof.onlyFailures, the game's java becomes a test run (TestRunLauncher).
 		project.getGradle().getTaskGraph().whenReady(graph -> {
 			boolean testRun = games.isPresent() || flag(onlyFailures);
@@ -98,6 +100,7 @@ public abstract class SpawnproofPlugin implements Plugin<PluginAware> {
 						t.limit().set(limit);
 						t.task().getTimeout().set((Duration) null);
 					}
+					if (t.productionRun() && Dirs.isLinux() && t.hidden().get()) t.hideable().set(HiddenLauncher.wrap(t.task()));
 				}
 				if (!testRun) continue;
 				if (t.task() instanceof JavaExec) {
@@ -132,14 +135,14 @@ public abstract class SpawnproofPlugin implements Plugin<PluginAware> {
 				.zip(hidden, (r, h) -> r + (r.startsWith(Rules.TEST) ? h ? ", hidden" : ", visible" : "")));
 			Property<Duration> limit = project.getObjects().property(Duration.class);
 			Property<Boolean> testRun = project.getObjects().property(Boolean.class).convention(false);
-			takeovers.add(new Takeover(task, kind, role, limit, testRun));
+			// False for a game that was to be hidden but couldn't be, so the queue isn't told it's hidden.
+			Property<Boolean> hideable = project.getObjects().property(Boolean.class).convention(true);
+			takeovers.add(new Takeover(task, productionRun, kind, role, hidden, limit, testRun, hideable));
 			task.usesService(service);
 			Provider<Boolean> rerun = providers.provider(() -> flag(onlyFailures));
-			task.doFirst(new AcquireAction(service, role, exclusive, hidden, limit, projectName, rootDir, testRun, games, rerun));
+			task.doFirst(new AcquireAction(service, role, exclusive, hidden.zip(hideable, (h, can) -> h && can), limit, projectName, rootDir,
+				testRun, games, rerun));
 			task.doLast(new TimeLimit.Stop(service));
-			if (productionRun && Dirs.isLinux()) {
-				HiddenLauncher.install(task, project, role.zip(hidden, (r, h) -> h && Rules.TEST.equals(r)));
-			}
 		});
 
 		if (!project.getTasks().getNames().contains("spawnproofTasks")) {
@@ -167,7 +170,8 @@ public abstract class SpawnproofPlugin implements Plugin<PluginAware> {
 		}
 	}
 
-	private record Takeover(Task task, Provider<String> kind, Provider<String> role, Property<Duration> limit, Property<Boolean> testRun) {}
+	private record Takeover(Task task, boolean productionRun, Provider<String> kind, Provider<String> role, Provider<Boolean> hidden,
+		Property<Duration> limit, Property<Boolean> testRun, Property<Boolean> hideable) {}
 
 	/** -Pspawnproof.tests and the like, to the game as system properties: JavaExec's own, or a production run's JVM arguments. */
 	@SuppressWarnings("unchecked")

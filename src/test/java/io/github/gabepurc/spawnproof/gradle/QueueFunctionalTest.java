@@ -8,6 +8,8 @@ import org.gradle.testkit.runner.GradleRunner;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
@@ -84,6 +86,76 @@ class QueueFunctionalTest {
 			""));
 		return dir;
 	}
+
+	/**
+	 * A mod build with a production client run, as Loom has them: a task that isn't a JavaExec and takes no environment, only
+	 * a java launcher. The stand-in (in buildSrc, under Loom's own class name, which is how the plugin knows one) says which
+	 * java it starts its "game" with.
+	 */
+	private Path productionRunProject(String name, String taskLines) throws IOException {
+		Path dir = project(name, true, 0, "");
+		Path loom = dir.resolve("buildSrc/src/main/java/net/fabricmc/loom/task/prod");
+		Files.createDirectories(loom);
+		Files.writeString(dir.resolve("buildSrc/build.gradle"), "plugins { id 'java' }\ndependencies { implementation gradleApi() }\n");
+		Files.writeString(loom.resolve("ClientProductionRunTask.java"), String.join("\n",
+			"package net.fabricmc.loom.task.prod;",
+			"",
+			"import org.gradle.api.DefaultTask;",
+			"import org.gradle.api.file.ConfigurableFileCollection;",
+			"import org.gradle.api.plugins.JavaPluginExtension;",
+			"import org.gradle.api.provider.ListProperty;",
+			"import org.gradle.api.provider.Property;",
+			"import org.gradle.api.tasks.*;",
+			"import org.gradle.jvm.toolchain.JavaLauncher;",
+			"import org.gradle.jvm.toolchain.JavaToolchainService;",
+			"import org.gradle.process.ExecOperations;",
+			"",
+			"import javax.inject.Inject;",
+			"",
+			"public abstract class ClientProductionRunTask extends DefaultTask {",
+			"\t@Nested public abstract Property<JavaLauncher> getJavaLauncher();",
+			"\t@Input public abstract ListProperty<String> getJvmArgs();",
+			"\t@Classpath public abstract ConfigurableFileCollection getClasspath();",
+			"\t@Input public abstract Property<String> getRanFile();",
+			"\t@Inject protected abstract ExecOperations getExecOperations();",
+			"\t@Inject protected abstract JavaToolchainService getJavaToolchainService();",
+			"",
+			"\tpublic ClientProductionRunTask() {",
+			"\t\tJavaPluginExtension java = getProject().getExtensions().getByType(JavaPluginExtension.class);",
+			"\t\tgetJavaLauncher().convention(getJavaToolchainService().launcherFor(java.getToolchain()));",
+			"\t}",
+			"",
+			"\t@TaskAction",
+			"\tpublic void run() {",
+			"\t\tgetLogger().lifecycle(\"game java: \" + getJavaLauncher().get().getExecutablePath());",
+			"\t\tgetExecOperations().exec(spec -> {",
+			"\t\t\tspec.commandLine(getJavaLauncher().get().getExecutablePath());",
+			"\t\t\tspec.args(getJvmArgs().get());",
+			"\t\t\tspec.args(\"-cp\", getClasspath().getAsPath(), \"FakeGame\", getRanFile().get());",
+			"\t\t});",
+			"\t}",
+			"}",
+			""));
+		Files.writeString(dir.resolve("build.gradle"), String.join("\n",
+			"",
+			"tasks.register('auditClientMixins', net.fabricmc.loom.task.prod.ClientProductionRunTask) {",
+			"\tclasspath.from(sourceSets.main.runtimeClasspath)",
+			"\tranFile = file('ran.txt').absolutePath",
+			taskLines,
+			"}",
+			""), StandardOpenOption.APPEND);
+		return dir;
+	}
+
+	/** The java the stand-in production run started its game with. */
+	private static String gameJava(BuildResult result) {
+		return result.getOutput().lines().filter(l -> l.startsWith("game java: ")).map(l -> l.substring("game java: ".length())).findFirst()
+			.orElseThrow(() -> new AssertionError("no game ran:\n" + result.getOutput()));
+	}
+
+	/** A build that picks the java its production game runs on, as a mod does to run each Minecraft version on its own Java. */
+	private static final String OWN_LAUNCHER =
+		"\tjavaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(" + Runtime.version().feature() + ") }";
 
 	private GradleRunner runner(Path dir, Map<String, String> extraEnv, String... args) {
 		Map<String, String> env = new HashMap<>(System.getenv());
@@ -222,5 +294,49 @@ class QueueFunctionalTest {
 		int code = Main.run(new String[] {"run", "--label", "by hand", "--", "sh", "-c", "test -n \"$SPAWNPROOF_LEASE\""}, print, print);
 		assertEquals(0, code, out.toString(StandardCharsets.UTF_8));
 		assertTrue(String.join("\n", history(1)).contains("by hand"));
+	}
+
+	@Test
+	@EnabledOnOs(OS.LINUX)
+	void aProductionRunStartsThroughTheHidingScript() throws Exception {
+		Path a = productionRunProject("mod-a", "");
+		BuildResult result = runner(a, Map.of(), "auditClientMixins").build();
+		assertTrue(gameJava(result).startsWith(home.resolve("state/launchers").toString()), result.getOutput());
+		assertTrue(Files.exists(a.resolve("ran.txt")), "the script ran the real java");
+		assertTrue(String.join("\n", history(1)).contains("\"hidden\":true"), history(1).toString());
+	}
+
+	@Test
+	@EnabledOnOs(OS.LINUX)
+	void aProductionRunWithItsOwnLauncherIsHiddenToo() throws Exception {
+		Path a = productionRunProject("mod-a", OWN_LAUNCHER);
+		BuildResult result = runner(a, Map.of(), "auditClientMixins", "--configuration-cache").build();
+		assertTrue(gameJava(result).startsWith(home.resolve("state/launchers").toString()), result.getOutput());
+		assertTrue(Files.exists(a.resolve("ran.txt")), "the script ran the real java");
+		Files.delete(a.resolve("ran.txt"));
+		BuildResult again = runner(a, Map.of(), "auditClientMixins", "--configuration-cache").build();
+		assertTrue(again.getOutput().contains("Reusing configuration cache"), again.getOutput());
+		assertTrue(gameJava(again).startsWith(home.resolve("state/launchers").toString()), again.getOutput());
+		assertTrue(Files.exists(a.resolve("ran.txt")), "the script ran the real java");
+	}
+
+	@Test
+	@EnabledOnOs(OS.LINUX)
+	void aVisibleProductionRunKeepsItsOwnJava() throws Exception {
+		Path a = productionRunProject("mod-a", OWN_LAUNCHER);
+		BuildResult result = runner(a, Map.of(), "auditClientMixins", "-Pspawnproof.visible").build();
+		assertFalse(gameJava(result).startsWith(home.toString()), result.getOutput());
+		assertTrue(Files.exists(a.resolve("ran.txt")));
+	}
+
+	@Test
+	@EnabledOnOs(OS.LINUX)
+	void aProductionRunThatCantBeHiddenSaysSo() throws Exception {
+		Path a = productionRunProject("mod-a", OWN_LAUNCHER + "\n\tjavaLauncher.disallowChanges()");
+		BuildResult result = runner(a, Map.of(), "auditClientMixins").build();
+		assertTrue(result.getOutput().contains("couldn't put :auditClientMixins on the hidden display"), result.getOutput());
+		assertFalse(gameJava(result).startsWith(home.toString()), result.getOutput());
+		assertTrue(Files.exists(a.resolve("ran.txt")), "the game still ran");
+		assertTrue(String.join("\n", history(1)).contains("\"hidden\":false"), history(1).toString());
 	}
 }
