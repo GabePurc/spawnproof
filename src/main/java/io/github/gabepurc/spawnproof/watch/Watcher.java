@@ -595,15 +595,18 @@ public final class Watcher {
 			if (stopping) return;
 			String stopped = test.stoppedBecause();
 			if (outcome == null || stopped != null) {
+				// Stopped is stopped, however far it had got: while it was still fetching the commit, it comes back with no outcome
+				// too, but the commit hasn't gone anywhere.
+				boolean gone = stopped == null;
 				synchronized (this) {
 					Pr p = r.prs.get(job.pr());
 					if (p != null && job.sha().equals(p.sha)) {
-						p.state = outcome == null ? "gone" : "error";
-						p.summary = outcome == null ? "The commit went before its turn" : "Not finished: " + stopped;
+						p.state = gone ? "gone" : "error";
+						p.summary = gone ? "The commit went before its turn" : "Not finished: " + stopped;
 						save(r);
 					}
 				}
-				tell(r, job.sha(), "error", outcome == null ? "Not tested: the commit went before its turn" : "Not finished: " + stopped, null);
+				tell(r, job.sha(), "error", gone ? "Not tested: the commit went before its turn" : "Not finished: " + stopped, null);
 				if (stopped != null) log.accept(r.name() + " PR #" + job.pr() + " stopped: " + stopped);
 				continue;
 			}
