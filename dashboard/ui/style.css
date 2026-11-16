@@ -579,3 +579,154 @@ th {
 	color: var(--muted);
 	font-weight: 600;
 }
+
+/* Buttons that do things, and the small forms beside them. */
+
+.action {
+	flex: none;
+	padding: 4px 11px;
+	border: 1px solid var(--line);
+	border-radius: 7px;
+	background: var(--panel);
+	cursor: pointer;
+	font-size: 13px;
+	white-space: nowrap;
+}
+
+.action:hover:not(:disabled) {
+	background: var(--hover);
+}
+
+.action:disabled {
+	color: var(--muted);
+	cursor: default;
+}
+
+.action.danger {
+	color: var(--failed);
+}
+
+/* A pull request's title, which opens it on GitHub. */
+.action.link {
+	padding: 0;
+	border: 0;
+	background: none;
+	font: inherit;
+	font-weight: 550;
+	text-align: left;
+	white-space: normal;
+}
+
+.action.link:hover:not(:disabled) {
+	background: none;
+	color: var(--accent);
+	text-decoration: underline;
+}
+
+.controls {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px 18px;
+	margin-top: 14px;
+}
+
+.control {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	color: var(--muted);
+	font-size: 13px;
+}
+
+.control strong {
+	min-width: 1.2em;
+	color: var(--text);
+	text-align: center;
+}
+
+.actions {
+	display: flex;
+	flex: none;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 6px;
+}
+
+.header > .actions {
+	margin-left: auto;
+}
+
+input[type="text"], select {
+	padding: 4px 8px;
+	border: 1px solid var(--line);
+	border-radius: 7px;
+	background: var(--panel);
+	color: var(--text);
+	font: inherit;
+	font-size: 13px;
+}
+
+input.short {
+	width: 6em;
+}
+
+.form {
+	margin-top: 14px;
+	padding: 14px 16px;
+}
+
+.form p {
+	margin: 0 0 12px;
+}
+
+.form label {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+	margin-bottom: 12px;
+	color: var(--muted);
+	font-size: 13px;
+}
+
+.form .actions {
+	justify-content: flex-start;
+}
+
+/* A rerun's row: the buttons stay at the top when its console is open. */
+.row.top {
+	align-items: flex-start;
+}
+
+.pill.stopped { background: var(--error-bg); color: var(--error); }
+
+.console {
+	max-height: 280px;
+	margin: 10px 0 2px;
+}
+
+/* What a button press came to, at the foot of the window for a few seconds. */
+#notice {
+	position: fixed;
+	right: 24px;
+	bottom: 20px;
+	z-index: 5;
+	max-width: min(560px, calc(100% - 48px));
+	padding: 10px 14px;
+	border: 1px solid var(--line);
+	border-radius: 10px;
+	background: var(--panel);
+	box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18);
+	cursor: pointer;
+}
+
+#notice.problem {
+	border-color: var(--failed);
+	background: var(--failed-bg);
+	color: var(--failed);
+}
+
+#notice[hidden] {
+	display: none;
+}

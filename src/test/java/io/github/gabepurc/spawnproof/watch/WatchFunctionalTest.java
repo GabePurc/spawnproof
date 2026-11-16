@@ -518,4 +518,46 @@ class WatchFunctionalTest {
 			x.close();
 		}
 	}
+
+	/** What the dashboard's buttons ask the daemon: it knows a project's folder, not its repo. */
+	@Test
+	void aFolderIsWatchedAndATestStoppedOverTheSocket() throws Exception {
+		try {
+			cli(work, "start");
+			Map<String, Object> reply = tellDaemon(Map.of("type", "watch", "dir", work.toString(), "args", List.of("--games", "2")));
+			assertEquals("ok", Json.str(reply, "type"), reply.toString());
+			assertEquals("test/mod", Json.str(reply, "repo"));
+			assertTrue(Files.readString(home.resolve("config/watching.json")).contains("\"--games\""), "watched as spawnproof watch --games 2 would");
+
+			reply = tellDaemon(Map.of("type", "watch", "dir", work.toString(), "args", List.of("--nonsense")));
+			assertTrue("error".equals(Json.str(reply, "type")) && Json.str(reply, "message").contains("aren't options spawnproof test takes"), reply.toString());
+			reply = tellDaemon(Map.of("type", "watch", "dir", temp.toString(), "args", List.of()));
+			assertTrue("error".equals(Json.str(reply, "type")) && Json.str(reply, "message").contains("isn't in a git checkout"), reply.toString());
+
+			// A test that's stuck is stopped: GitHub hears it wasn't finished, and the status links to the pull request.
+			Path hold = home.resolve("hold");
+			Files.writeString(hold, "");
+			String a = commit("Get stuck", null, null);
+			pr(1, a, false);
+			awaitTesting(a);
+			assertTrue(cli(work, "status", "--json").contains("https://github.com/test/mod/pull/1"));
+			reply = tellDaemon(Map.of("type", "stop-pr", "repo", "test/mod", "by", "the dashboard"));
+			assertTrue(Json.str(reply, "message").contains("pull request #1"), reply.toString());
+			assertEquals("Not finished: stopped from the dashboard", Json.str(awaitStatus(a, "error"), "description"));
+			Files.delete(hold);
+			await(() -> "error".equals(Json.str(tellDaemonQuiet(Map.of("type", "stop-pr", "repo", "test/mod")), "type")), "the test to be gone");
+		} catch (AssertionError | Exception e) {
+			Path log = home.resolve("state/daemon.log");
+			System.out.println("---- daemon.log\n" + (Files.exists(log) ? Files.readString(log) : "(none)"));
+			throw e;
+		}
+	}
+
+	private Map<String, Object> tellDaemonQuiet(Map<String, Object> request) {
+		try {
+			return tellDaemon(request);
+		} catch (IOException e) {
+			return Map.of();
+		}
+	}
 }

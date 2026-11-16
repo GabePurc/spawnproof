@@ -19,7 +19,7 @@ class SchedulerTest {
 	}
 
 	private Lease ask(String task, boolean exclusive, boolean play) {
-		Lease.Request r = new Lease.Request("Mod", task, "/mod", "main", null, play, exclusive, true, 1);
+		Lease.Request r = new Lease.Request("Mod", task, "/mod", "main", null, play, exclusive, true, 1, false);
 		return scheduler.enqueue(r, new Lease.Listener() {
 			@Override
 			public void queued(Lease lease, int position, String reason, List<String> running) {

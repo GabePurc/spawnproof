@@ -20,6 +20,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Holds this build's game slots. A slot is let go when its task finishes, passes or fails; whatever is left goes when the
@@ -40,7 +41,17 @@ public abstract class LeaseService implements BuildService<BuildServiceParameter
 		Logger log = task.getLogger();
 		String path = task.getPath();
 		try {
-			Client.Lease lease = Client.acquire(request, message -> log.lifecycle("Spawnproof: {} is {}", path, message));
+			// The dashboard's Stop, for a game that's stuck: like the task's timeout, it interrupts the task's thread, which stops
+			// the game. Only while this task still holds its slot: never a thread that has moved on to other work.
+			Thread thread = Thread.currentThread();
+			AtomicReference<Client.Lease> mine = new AtomicReference<>();
+			Client.Lease lease = Client.acquire(request, message -> log.lifecycle("Spawnproof: {} is {}", path, message), reason -> {
+				Client.Lease held = mine.get();
+				if (held == null || leases.get(path) != held) return;
+				log.error("Spawnproof: {} was {}", path, reason);
+				thread.interrupt();
+			});
+			mine.set(lease);
 			Client.Lease old = leases.put(path, lease);
 			if (old != null) old.close();
 			if (lease.display != null) {

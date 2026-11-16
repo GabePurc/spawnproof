@@ -2,7 +2,9 @@
 
 // The dashboard's window. Everything it shows comes from the daemon: the live status arrives as a "status" event every
 // second, and the projects, a project's runs and one run's results are asked for (the app's "daemon" command passes the
-// request on). Text from results is always put in as text, never as HTML: test names and messages come from mods' code.
+// request on). Its buttons ask the daemon the same way, for what the spawnproof command can do: run tests again, pause
+// and set the queue, watch repos, stop what's stuck. Text from results is always put in as text, never as HTML: test
+// names and messages come from mods' code.
 
 const tauri = window.__TAURI__;
 
@@ -15,6 +17,14 @@ const state = {
 	loaded: null,
 	/** The newest game in the status's recent list: when it changes, a run may have been kept. */
 	lastGame: null,
+	/** What the last button press came to, shown for a few seconds: { text, problem }. */
+	notice: null,
+	/** The button that's asking "sure?" before it stops or deletes something: { key }. */
+	confirm: null,
+	/** Reruns' consoles that are open, by rerun id: { lines, stick, top, done }. */
+	consoles: {},
+	/** The small forms that are open: pr { repo, value } to test a pull request, watch { dir, value } to watch a repo. */
+	forms: {},
 };
 
 function ask(request) {
@@ -30,7 +40,8 @@ function h(tag, props, ...children) {
 		if (value === null || value === undefined || value === false) continue;
 		if (key === 'class') el.className = value;
 		else if (key.startsWith('on')) el.addEventListener(key.slice(2), value);
-		else if (key === 'open' || key === 'hidden') el[key] = Boolean(value);
+		else if (key === 'open' || key === 'hidden' || key === 'disabled' || key === 'selected') el[key] = Boolean(value);
+		else if (key === 'value') el.value = value;
 		else if (key === 'style') el.style.cssText = value; // Not as an attribute, which the page's security policy turns away.
 		else el.setAttribute(key, value);
 	}
@@ -53,6 +64,100 @@ function replace(el, ...children) {
 
 function pill(status, text) {
 	return h('span', { class: 'pill ' + (status || '') }, text || statusWord(status));
+}
+
+/** A button that does something: button('Pause', () => ...). In a row or a test's heading, pressing it does only that. */
+function button(label, onclick, options) {
+	const o = options || {};
+	return h('button', {
+		class: 'action' + (o.danger ? ' danger' : '') + (o.link ? ' link' : ''),
+		title: o.title,
+		disabled: o.disabled,
+		onclick: e => {
+			e.preventDefault();
+			e.stopPropagation();
+			onclick();
+		},
+	}, label);
+}
+
+let confirmTimer = null;
+
+/** A button for what can't be taken back (stopping a game, deleting a clone): it asks once more, for a few seconds. */
+function confirmButton(key, label, sure, onclick, title) {
+	const asking = state.confirm !== null && state.confirm.key === key;
+	return button(asking ? sure : label, () => {
+		clearTimeout(confirmTimer);
+		if (asking) {
+			state.confirm = null;
+			onclick();
+		} else {
+			state.confirm = { key };
+			confirmTimer = setTimeout(() => {
+				state.confirm = null;
+				render();
+			}, 4000);
+		}
+		render();
+	}, { danger: true, title });
+}
+
+// ---- Doing things: every button asks the daemon, and says how it went.
+
+let noticeTimer = null;
+
+function say(text, problem) {
+	state.notice = { text, problem: Boolean(problem) };
+	clearTimeout(noticeTimer);
+	noticeTimer = setTimeout(() => {
+		state.notice = null;
+		renderNotice();
+	}, problem ? 12_000 : 6_000);
+	renderNotice();
+}
+
+function renderNotice() {
+	const el = document.getElementById('notice');
+	el.hidden = !state.notice;
+	if (!state.notice) return;
+	el.textContent = state.notice.text;
+	el.classList.toggle('problem', state.notice.problem);
+}
+
+/** Asks the daemon to do something. Says what it answered (or `done`: text, or a function of the reply), or what went wrong. */
+async function act(request, done) {
+	let reply = null;
+	try {
+		reply = await ask(request);
+		say(typeof done === 'function' ? done(reply) : done || reply.message || 'Done.');
+		// What changed shows at once, not at the next second's status.
+		ask({ type: 'status' }).then(onStatus, () => {});
+	} catch (e) {
+		say(String(e), true);
+	}
+	render();
+	return reply;
+}
+
+function setSlots(n) {
+	if (n < 1) return;
+	act({ type: 'set', key: 'slots', value: String(n) }, n === 1 ? 'One game runs at a time now.' : n + ' games run at once now.');
+}
+
+function setDisplay(mode) {
+	if (document.activeElement) document.activeElement.blur();
+	act({ type: 'set', key: 'display', value: mode },
+		mode === 'none' ? 'Test games show on the desktop from now on.' : 'Hidden display: ' + mode + '. It changes over once no hidden game is running.');
+}
+
+/** Runs a kept run's tests again: all of them, the ones that didn't pass ({ notPassed: true }), or some ({ tests: [...] }). */
+async function rerun(run, which) {
+	const reply = await act(Object.assign({ type: 'rerun', id: run.id }, which));
+	if (reply) show({ name: 'live' });
+}
+
+function openLink(url) {
+	tauri.core.invoke('open_link', { url }).catch(e => say(String(e), true));
 }
 
 function statusWord(status) {
@@ -129,13 +234,41 @@ function show(view) {
 	if (view.name === 'run') loadRun(view);
 }
 
+// The live view is drawn afresh every second. Not while a button is being pressed, though, or the press would land on a
+// button that's gone; nor while a field is being typed in. It's drawn as soon as that's over.
+let pointerDown = false;
+let renderWaiting = false;
+
+function busy() {
+	if (pointerDown) return true;
+	const at = document.activeElement;
+	return Boolean(at) && document.getElementById('view').contains(at) && (at.tagName === 'INPUT' || at.tagName === 'SELECT');
+}
+
+function renderIfWaiting() {
+	setTimeout(() => {
+		if (renderWaiting) render();
+	}, 0);
+}
+
 function render() {
 	renderSidebar();
 	renderOffline();
+	renderNotice();
+	if (busy()) {
+		renderWaiting = true;
+		return;
+	}
+	renderWaiting = false;
 	const view = document.getElementById('view');
+	keepConsoleScroll(view);
 	if (state.view.name === 'live') replace(view, live());
 	else if (state.view.name === 'project') replace(view, project());
 	else if (state.view.name === 'run') replace(view, run());
+	restoreConsoleScroll(view);
+	// A form that just opened: its field is ready to type in.
+	const field = view.querySelector('[data-focus]');
+	if (field) field.focus();
 }
 
 function renderOffline() {
@@ -185,7 +318,8 @@ function live() {
 	return [
 		h('div', { class: 'header' }, h('h1', {}, 'Live'), s.paused ? pill('waiting', 'paused') : null),
 		h('div', { class: 'subtitle' }, plural(s.slots, 'game slot') + ' · ' + display),
-		s.paused ? h('div', { class: 'card notes problem' }, h('p', {}, 'Paused: running games finish, and no new ones start until you resume (spawnproof resume).')) : null,
+		queueControls(s),
+		s.paused ? h('div', { class: 'card notes problem' }, h('p', {}, 'Paused: running games finish, and no new ones start until you resume.')) : null,
 
 		s.playing.length ? [
 			h('h2', {}, 'Playing' + (s.holdWhilePlaying ? ': test games wait until the game closes' : '')),
@@ -200,6 +334,11 @@ function live() {
 			h('div', { class: 'card list' }, s.waiting.map((l, i) => gameRow(l, now, 'waiting', i + 1))),
 		] : null,
 
+		(s.reruns || []).length ? [
+			h('h2', {}, 'Run again from here'),
+			h('div', { class: 'card list' }, s.reruns.map(r => rerunRow(r, now))),
+		] : null,
+
 		(s.watching || []).length ? [h('h2', {}, 'Pull requests tested here'), s.watching.map(r => watched(r, now))] : null,
 
 		(s.recent || []).length ? [
@@ -211,6 +350,24 @@ function live() {
 				h('div', { class: 'side' }, 'ended ' + ago(g.endedAt))))),
 		] : null,
 	];
+}
+
+/** The queue's own settings: pausing it, how many games run at once, and where test games draw. */
+function queueControls(s) {
+	const mode = (s.config && s.config.display) || (s.display && s.display.mode) || 'auto';
+	const modes = { auto: 'auto (weston, else Xvfb)', weston: 'weston', xvfb: 'Xvfb', none: 'none: on the desktop' };
+	return h('div', { class: 'controls' },
+		s.paused
+			? button('Resume', () => act({ type: 'resume' }, 'Resumed: waiting games start again.'))
+			: button('Pause', () => act({ type: 'pause' }, 'Paused: running games finish, and no new ones start until you resume.'),
+				{ title: 'Hold new games back; the ones running finish' }),
+		h('span', { class: 'control' }, 'Games at once',
+			button('−', () => setSlots(s.slots - 1), { title: 'One fewer', disabled: s.slots <= 1 }),
+			h('strong', {}, String(s.slots)),
+			button('+', () => setSlots(s.slots + 1), { title: 'One more' })),
+		h('label', { class: 'control' }, 'Hidden display',
+			h('select', { onchange: e => setDisplay(e.target.value) },
+				Object.keys(modes).map(m => h('option', { value: m, selected: m === mode }, modes[m])))));
 }
 
 function gameRow(l, now, kind, position) {
@@ -230,16 +387,105 @@ function gameRow(l, now, kind, position) {
 		h('div', { class: 'main' },
 			h('div', { class: 'title' }, l.project + ' ' + who(l)),
 			h('div', { class: 'meta' }, meta.join(' · ')),
-			progress));
+			progress),
+		// A game that's stuck. (A build with an older Spawnproof can't be told to stop: its row has no button.)
+		kind === 'running' && l.stoppable ? h('div', { class: 'actions' },
+			confirmButton('game:' + l.id, 'Stop', 'Stop this game?', () => act({ type: 'stop-game', id: l.id }),
+				'Stop this game: its test fails as stopped, and its slot comes free')) : null);
 }
+
+// ---- Tests run again from here, and their consoles.
+
+function rerunRow(r, now) {
+	const going = r.state === 'running';
+	const meta = [r.what, going ? 'started ' + duration(now - r.startedAt) + ' ago' : 'took ' + duration(r.endedAt - r.startedAt) + ' · ' + ago(r.endedAt)];
+	if (r.stoppedBecause) meta.push(r.stoppedBecause);
+	const open = state.consoles[r.id];
+	return h('div', { class: 'row top' },
+		pill(r.state),
+		h('div', { class: 'main' },
+			h('div', { class: 'title' }, r.project + ' ' + r.task + (r.branch ? ' (' + r.branch + ')' : '')),
+			h('div', { class: 'meta' }, meta.join(' · ')),
+			open ? h('pre', { class: 'console', 'data-console': String(r.id), onscroll: e => consoleScrolled(r.id, e.target) },
+				open.lines.length ? open.lines.join('\n') : 'Nothing on its console yet.') : null),
+		h('div', { class: 'actions' },
+			r.result ? button('Results', () => show({ name: 'run', id: r.result, project: r.project })) : null,
+			button(open ? 'Hide console' : 'Console', () => toggleConsole(r)),
+			going ? confirmButton('rerun:' + r.id, 'Stop', 'Stop this run?', () => act({ type: 'stop-rerun', id: r.id })) : null));
+}
+
+function toggleConsole(r) {
+	if (state.consoles[r.id]) delete state.consoles[r.id];
+	else {
+		state.consoles[r.id] = { lines: [], stick: true, top: 0, done: false };
+		readConsole(r);
+	}
+	render();
+}
+
+async function readConsole(r) {
+	const c = state.consoles[r.id];
+	if (!c) return;
+	try {
+		const reply = await ask({ type: 'rerun-log', id: r.id, lines: 300 });
+		if (state.consoles[r.id] !== c) return;
+		c.lines = reply.lines || [];
+		// One more read once it's over gets its last lines.
+		c.done = r.state !== 'running';
+	} catch (e) {
+		c.lines = [String(e)];
+		c.done = true;
+	}
+	if (state.view.name === 'live') render();
+}
+
+/** Every couple of seconds: the open consoles of reruns still going. */
+function readConsoles() {
+	const reruns = (state.status && state.status.reruns) || [];
+	for (const id of Object.keys(state.consoles)) {
+		const r = reruns.find(x => String(x.id) === id);
+		if (!r) delete state.consoles[id];
+		else if (!state.consoles[id].done) readConsole(r);
+	}
+}
+
+/** A console follows its last line until it's scrolled up, and then stays where it was put. */
+function consoleScrolled(id, el) {
+	const c = state.consoles[id];
+	if (!c) return;
+	c.stick = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+	c.top = el.scrollTop;
+}
+
+function keepConsoleScroll(view) {
+	for (const el of view.querySelectorAll('[data-console]')) consoleScrolled(el.getAttribute('data-console'), el);
+}
+
+function restoreConsoleScroll(view) {
+	for (const el of view.querySelectorAll('[data-console]')) {
+		const c = state.consoles[el.getAttribute('data-console')];
+		if (c) el.scrollTop = c.stick ? el.scrollHeight : c.top;
+	}
+}
+
+// ---- Watched repos.
 
 function watched(r, now) {
 	const rows = [];
+	const prTitle = (number, title, url) => {
+		const text = '#' + number + ' ' + (title || '');
+		return h('div', { class: 'title' }, url ? button(text, () => openLink(url), { link: true, title: 'Open it on GitHub' }) : text);
+	};
+	const testAgain = number => button('Test now', () => act({ type: 'test-pr', repo: r.repo, pr: number }),
+		{ title: 'Test this pull request\'s newest commit again on this machine' });
 	if (r.testing && r.testing.pr) {
 		rows.push(h('div', { class: 'row' }, pill('testing'),
 			h('div', { class: 'main' },
-				h('div', { class: 'title' }, '#' + r.testing.pr + ' ' + (r.testing.title || '')),
-				h('div', { class: 'meta' }, shortSha(r.testing.sha) + ' · ' + duration(now - r.testing.startedAt)))));
+				prTitle(r.testing.pr, r.testing.title, r.testing.url),
+				h('div', { class: 'meta' }, shortSha(r.testing.sha) + ' · ' + duration(now - r.testing.startedAt))),
+			h('div', { class: 'actions' },
+				confirmButton('pr:' + r.repo, 'Stop', 'Stop this test?', () => act({ type: 'stop-pr', repo: r.repo }),
+					'Stop this test: GitHub hears it wasn\'t finished'))));
 	}
 	for (const pr of r.waiting || []) rows.push(h('div', { class: 'row' }, pill('waiting'), h('div', { class: 'main' }, h('div', { class: 'title' }, '#' + pr))));
 	for (const p of r.prs || []) {
@@ -247,12 +493,46 @@ function watched(r, now) {
 		const summary = p.state === 'interrupted' ? 'not finished when Spawnproof stopped: tested again' : p.summary || '';
 		rows.push(h('div', { class: 'row' }, pill(p.state),
 			h('div', { class: 'main' },
-				h('div', { class: 'title' }, '#' + p.pr + ' ' + (p.title || '')),
-				h('div', { class: 'meta' }, summary)),
-			h('div', { class: 'side' }, shortSha(p.sha) + (p.at ? ' · ' + ago(p.at) : ''))));
+				prTitle(p.pr, p.title, p.url),
+				h('div', { class: 'meta' }, [summary, shortSha(p.sha) + (p.at ? ' · ' + ago(p.at) : '')].filter(Boolean).join(' · '))),
+			h('div', { class: 'actions' }, testAgain(p.pr))));
 	}
+	const form = state.forms.pr && state.forms.pr.repo === r.repo ? state.forms.pr : null;
+	const closeForm = () => {
+		state.forms.pr = null;
+		if (document.activeElement) document.activeElement.blur();
+		render();
+	};
+	const testAsked = () => {
+		const number = form.value.trim().replace(/^#/, '');
+		if (!/^[1-9][0-9]*$/.test(number)) {
+			say('Give the pull request\'s number, like 12.', true);
+			return;
+		}
+		closeForm();
+		act({ type: 'test-pr', repo: r.repo, pr: Number(number) });
+	};
 	return [
-		h('div', { class: 'header' }, h('h3', {}, r.repo), h('span', { class: 'muted' }, r.lookedAt ? 'looked at GitHub ' + ago(r.lookedAt) : '')),
+		h('div', { class: 'header' }, h('h3', {}, r.repo), h('span', { class: 'muted' }, r.lookedAt ? 'looked at GitHub ' + ago(r.lookedAt) : ''),
+			h('div', { class: 'actions' },
+				form ? [
+					h('input', {
+						type: 'text', class: 'short', placeholder: 'number', value: form.value, 'aria-label': 'Pull request number', 'data-focus': form.focus ? '' : null,
+						oninput: e => { form.value = e.target.value; },
+						onkeydown: e => {
+							if (e.key === 'Enter') testAsked();
+							if (e.key === 'Escape') closeForm();
+						},
+					}),
+					button('Test', testAsked),
+					button('Cancel', closeForm),
+				] : button('Test a pull request…', () => {
+					state.forms.pr = { repo: r.repo, value: '', focus: true };
+					render();
+					state.forms.pr.focus = false;
+				}, { title: 'Any open pull request by its number: one from a fork, which isn\'t tested on its own, or one to test again' }),
+				confirmButton('unwatch:' + r.repo, 'Stop watching', 'Stop watching, and delete its clone?',
+					() => act({ type: 'unwatch', repo: r.repo }, 'Stopped watching ' + r.repo + '. Its clone is being deleted.')))),
 		r.problem ? h('div', { class: 'card notes problem' }, h('p', {}, r.problem)) : null,
 		h('div', { class: 'card list', style: 'margin: 10px 0 18px' }, rows.length ? rows : h('div', { class: 'empty' }, 'No open pull requests to test.')),
 	];
@@ -291,12 +571,60 @@ function project() {
 				title: c.dir,
 				onclick: () => { view.dir = c.dir; render(); },
 			}, checkoutName(c)))) : null,
+		watchControl(p, view),
 		h('h2', {}, 'Test runs'),
 		!loaded ? h('div', { class: 'empty' }, 'Loading…')
 			: loaded.error ? h('div', { class: 'card notes problem' }, h('p', {}, loaded.error))
 			: h('div', { class: 'card list' }, runs.length ? runs.map(runRow) : h('div', { class: 'empty' },
 				'No test runs kept yet. A run of this project\'s tests (spawnproof test, or its game test task) shows up here when it ends.')),
 	];
+}
+
+/**
+ * Watching a checkout's repo: each new commit on its pull requests is tested on this machine. Offered for the checkout on
+ * show (or the only one), never for Spawnproof's own clone of a repo it watches already.
+ */
+function watchControl(p, view) {
+	const mine = p.checkouts.filter(c => !c.watch);
+	const target = view.dir ? mine.find(c => c.dir === view.dir) : mine.length === 1 ? mine[0] : null;
+	if (!target) return null;
+	const form = state.forms.watch && state.forms.watch.dir === target.dir ? state.forms.watch : null;
+	// Watched already, as far as the project's own runs show: one of its checkouts is Spawnproof's clone of a watched repo.
+	const watching = ((state.status && state.status.watching) || []).map(r => r.repo);
+	const already = p.checkouts.map(c => c.watch).find(repo => repo && watching.includes(repo));
+	if (!form) {
+		return h('div', { class: 'controls' },
+			button(already ? 'Change how its pull requests are tested…' : 'Test this repo\'s pull requests here…', () => {
+				state.forms.watch = { dir: target.dir, value: '', focus: true };
+				render();
+				state.forms.watch.focus = false;
+			}, { title: 'Watch the GitHub repo ' + tilde(target.dir) + ' is a checkout of' }),
+			already ? h('span', { class: 'muted' }, 'Pull requests of ' + already + ' are tested on this machine.') : null);
+	}
+	const close = () => {
+		state.forms.watch = null;
+		if (document.activeElement) document.activeElement.blur();
+		render();
+	};
+	const watch = () => {
+		const args = form.value.trim() ? form.value.trim().split(/\s+/) : [];
+		close();
+		act({ type: 'watch', dir: target.dir, args }, reply => 'Watching ' + reply.repo + ': each new commit on its pull requests is tested here, and the result '
+			+ 'goes on the pull request as the "spawnproof" check.');
+	};
+	return h('div', { class: 'card form' },
+		h('p', {}, 'Each new commit on the pull requests of the GitHub repo ' + tilde(target.dir) + ' is a checkout of gets tested on this machine, in a clone '
+			+ 'of its own, and the result goes on the pull request as the "spawnproof" check. Pull requests from forks are tested only when you ask.'),
+		h('label', {}, 'Options for spawnproof test, if any',
+			h('input', {
+				type: 'text', placeholder: '--games 2', value: form.value, 'data-focus': form.focus ? '' : null,
+				oninput: e => { form.value = e.target.value; },
+				onkeydown: e => {
+					if (e.key === 'Enter') watch();
+					if (e.key === 'Escape') close();
+				},
+			})),
+		h('div', { class: 'actions' }, button('Watch', watch), button('Cancel', close)));
 }
 
 function runRow(r) {
@@ -337,10 +665,20 @@ function run() {
 	const clock = results.clock || {};
 	const tests = results.tests || [];
 	const where = [meta.project, meta.label || meta.branch, tilde(meta.dir)].filter(Boolean).join(' · ');
+	// A pull request's run was made in Spawnproof's own clone, which the next test changes: the pull request is tested again.
+	const itsProject = state.projects.find(x => x.name === meta.project);
+	const itsCheckout = itsProject ? itsProject.checkouts.find(c => c.dir === meta.dir) : null;
+	const ofPullRequest = Boolean(itsCheckout && itsCheckout.watch);
+	const notPassed = meta.notPassed || [];
 	return [
 		back,
 		h('div', { class: 'header' }, h('h1', {}, meta.task), pill(results.status)),
 		h('div', { class: 'subtitle' }, where),
+		ofPullRequest ? h('div', { class: 'subtitle' }, 'A pull request\'s run: to run it again, press Test now beside the pull request in Live.')
+			: h('div', { class: 'controls' },
+				button('Run every test again', () => rerun(meta, {}), { title: 'spawnproof test in ' + tilde(meta.dir) + ': its games wait their turn in the queue' }),
+				notPassed.length ? button(notPassed.length === 1 ? 'Run the one that didn\'t pass again' : 'Run the ' + notPassed.length + ' that didn\'t pass again',
+					() => rerun(meta, { notPassed: true }), { title: notPassed.join(', ') }) : null),
 		h('div', { class: 'subtitle' }, 'Ran ' + agoIso(results.startedAt) + ' for ' + duration(results.durationMs)
 			+ (meta.how === 'one game' ? ', in one game' : (results.games || []).length > 1 ? ', across ' + results.games.length + ' games' : '')),
 		h('div', { class: 'stats' },
@@ -354,7 +692,7 @@ function run() {
 		(results.problems || []).length ? h('div', { class: 'card notes problem' }, results.problems.map(p => h('p', {}, p))) : null,
 		(results.notes || []).length ? h('div', { class: 'card notes' }, results.notes.map(p => h('p', {}, p))) : null,
 		h('h2', {}, 'Tests'),
-		tests.length ? tests.map(t => test(t, meta.id)) : h('div', { class: 'card empty' }, 'No tests ran.'),
+		tests.length ? tests.map(t => test(t, meta, !ofPullRequest)) : h('div', { class: 'card empty' }, 'No tests ran.'),
 		(results.games || []).length > 1 ? [
 			h('h2', {}, 'Games'),
 			h('div', { class: 'card' }, h('table', {},
@@ -372,7 +710,8 @@ function stat(value, label) {
 	return h('div', { class: 'card stat' }, h('div', { class: 'value' }, String(value)), h('div', { class: 'label' }, label));
 }
 
-function test(t, runId) {
+function test(t, meta, canRerun) {
+	const runId = meta.id;
 	const checks = t.checks || [];
 	const failed = checks.filter(c => !c.ok).length;
 	const side = [];
@@ -383,7 +722,8 @@ function test(t, runId) {
 		h('summary', {},
 			pill(t.status),
 			h('div', { class: 'main' }, h('div', { class: 'title' }, t.name), t.tags && t.tags.length ? h('div', { class: 'meta' }, t.tags.join(', ')) : null),
-			h('div', { class: 'side' }, side.join(' · '))),
+			h('div', { class: 'side' }, side.join(' · ')),
+			canRerun ? button('Run again', () => rerun(meta, { tests: [t.name] }), { title: 'Run this test again in ' + tilde(meta.dir) }) : null),
 		h('div', { class: 'test-body' },
 			t.error ? h('div', { class: 'error-box' },
 				h('div', {}, h('strong', {}, t.error.type || 'Error'), ': ' + (t.error.message || '')),
@@ -467,6 +807,21 @@ document.getElementById('lightbox').addEventListener('click', () => { document.g
 document.addEventListener('keydown', e => {
 	if (e.key === 'Escape') document.getElementById('lightbox').hidden = true;
 });
+
+// See busy(): a press that's under way, or a field that was being typed in, is over.
+document.addEventListener('pointerdown', () => { pointerDown = true; }, true);
+for (const over of ['pointerup', 'pointercancel']) {
+	document.addEventListener(over, () => {
+		pointerDown = false;
+		renderIfWaiting();
+	}, true);
+}
+document.addEventListener('focusout', renderIfWaiting);
+document.getElementById('notice').addEventListener('click', () => {
+	state.notice = null;
+	renderNotice();
+});
+setInterval(readConsoles, 2000);
 
 tauri.event.listen('status', e => onStatus(e.payload));
 tauri.event.listen('offline', e => {

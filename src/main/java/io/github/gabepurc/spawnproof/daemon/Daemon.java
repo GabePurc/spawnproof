@@ -4,7 +4,10 @@ import io.github.gabepurc.spawnproof.Dirs;
 import io.github.gabepurc.spawnproof.Json;
 import io.github.gabepurc.spawnproof.Version;
 import io.github.gabepurc.spawnproof.Wire;
+import io.github.gabepurc.spawnproof.cli.TestCommand;
 import io.github.gabepurc.spawnproof.run.KeptRuns;
+import io.github.gabepurc.spawnproof.watch.Checkout;
+import io.github.gabepurc.spawnproof.watch.GitHub;
 import io.github.gabepurc.spawnproof.watch.Watch;
 import io.github.gabepurc.spawnproof.watch.Watcher;
 
@@ -22,9 +25,11 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -45,6 +50,9 @@ public final class Daemon {
 	private final Scheduler scheduler;
 	private final Displays displays;
 	private final Watcher watcher = new Watcher(config, Daemon::log);
+	private final Reruns reruns = new Reruns(Daemon::log, Dirs.state().resolve("watch"));
+	/** The connections of the games that can be told to stop, by their ids. */
+	private final Map<Long, Wire> stoppable = new ConcurrentHashMap<>();
 	private final ExecutorService grants = Executors.newCachedThreadPool(r -> {
 		Thread t = new Thread(r, "spawnproof-grant");
 		t.setDaemon(true);
@@ -149,7 +157,7 @@ public final class Daemon {
 			}
 			long now = System.currentTimeMillis();
 			// A watched repo keeps it up: its pull requests can't be tested by a daemon that isn't running.
-			boolean busy = !scheduler.isEmpty() || connections.get() > 0 || watcher.watching();
+			boolean busy = !scheduler.isEmpty() || connections.get() > 0 || watcher.watching() || !reruns.running().isEmpty();
 			if (busy) lastBusy = now;
 			displays.stopIfIdle(scheduler.hiddenInUse(), config.displayIdleMinutes * 60_000L);
 			if (!Files.exists(socket)) {
@@ -173,6 +181,7 @@ public final class Daemon {
 
 	private synchronized void cleanUp() {
 		watcher.stop();
+		reruns.stopAll();
 		displays.stop();
 		try {
 			Files.deleteIfExists(socket);
@@ -220,6 +229,10 @@ public final class Daemon {
 							+ "it's tested again when Spawnproof starts)"));
 						return;
 					}
+					if (!force && !reruns.running().isEmpty()) {
+						wire.send(Map.of("type", "error", "message", String.join(", ", reruns.running()) + " is going (stop --force stops it too)"));
+						return;
+					}
 					// A newer Spawnproof replacing this one says so, and picks the watching back up when it starts. Anyone else is
 					// turned down while repos are watched: above all a build with an older Spawnproof, which would replace this daemon
 					// with one that can't watch. Turned down, it uses this one as it is.
@@ -232,10 +245,17 @@ public final class Daemon {
 					log("stopping on request");
 					stop();
 				}
-				case "watch" -> wire.send(watcher.watch(new Watch(Json.str(request, "repo"), Json.str(request, "source"),
-					String.valueOf(request.getOrDefault("path", "")), Json.strings(request, "args"), System.currentTimeMillis())));
+				case "watch" -> wire.send(request.get("dir") != null ? watchFolder(Json.str(request, "dir"), Json.strings(request, "args"))
+					: watcher.watch(new Watch(Json.str(request, "repo"), Json.str(request, "source"),
+						String.valueOf(request.getOrDefault("path", "")), Json.strings(request, "args"), System.currentTimeMillis())));
 				case "unwatch" -> wire.send(watcher.unwatch(Json.str(request, "repo")));
 				case "test-pr" -> wire.send(watcher.testPr(Json.str(request, "repo"), Json.num(request, "pr", -1)));
+				// What the dashboard's buttons ask for; the command and an MCP server can ask the same.
+				case "stop-pr" -> wire.send(watcher.stopTest(Json.str(request, "repo"), stoppedFrom(request)));
+				case "rerun" -> wire.send(reruns.start(Json.str(request, "id"), Json.strings(request, "tests"), Json.bool(request, "notPassed")));
+				case "stop-rerun" -> wire.send(reruns.stop(Json.num(request, "id", -1), stoppedFrom(request)));
+				case "rerun-log" -> wire.send(reruns.console(Json.num(request, "id", -1), (int) Json.num(request, "lines", 200)));
+				case "stop-game" -> wire.send(stopGame(Json.num(request, "id", -1), stoppedFrom(request)));
 				// For the dashboard; the command and an MCP server can ask the same.
 				case "follow" -> follow(wire);
 				case "projects" -> wire.send(Map.of("type", "projects", "projects",
@@ -266,6 +286,49 @@ public final class Daemon {
 			wire.close();
 			connections.decrementAndGet();
 		}
+	}
+
+	/** "stopped from the dashboard": who asked says who they are, and the game's build says so on its console. */
+	private static String stoppedFrom(Map<String, Object> request) {
+		String by = Json.str(request, "by");
+		return by == null || by.isBlank() ? "stopped on request" : "stopped from " + by.strip();
+	}
+
+	/**
+	 * Tells a running game's build to stop it: a game that's stuck. The build does the stopping, as it would at its own
+	 * timeout, so the game's task fails and its slot comes free the usual way.
+	 */
+	private Map<String, Object> stopGame(long id, String why) throws IOException {
+		Lease lease = scheduler.running(id);
+		if (lease == null) throw new IOException("game #" + id + " isn't running (it may have just ended)");
+		Wire wire = stoppable.get(id);
+		if (wire == null) {
+			throw new IOException("game #" + id + " was started by a build with an older Spawnproof, which can't be told to stop: stop its build "
+				+ "where it runs");
+		}
+		wire.send(Map.of("type", "stop", "reason", why));
+		log("stop #" + id + " " + lease.describe() + ": " + why);
+		return Map.of("type", "ok", "message", "Stopping game #" + id + " (" + lease.describe() + ").");
+	}
+
+	/**
+	 * Watches the repo a folder is a checkout of, as `spawnproof watch` run in that folder would: the dashboard's Watch, which
+	 * knows a project's folder but not its repo.
+	 */
+	private Map<String, Object> watchFolder(String folder, List<String> args) throws IOException {
+		if (Projects.watchedRepo(folder, Dirs.state().resolve("watch")) != null) {
+			throw new IOException("that folder is Spawnproof's own clone of a watched repo: watch from the mod's own checkout");
+		}
+		if (!Files.isDirectory(Path.of(folder))) throw new IOException(folder + " isn't there any more");
+		Checkout checkout = Checkout.of(Path.of(folder));
+		try {
+			TestCommand.check(args);
+			TestCommand.build(checkout.dir(), args);
+		} catch (TestCommand.BadOptions e) {
+			throw new IOException("those aren't options spawnproof test takes: spawnproof " + e.getMessage());
+		}
+		GitHub.checkCanReport(config.githubApi(), checkout.repo());
+		return watcher.watch(new Watch(checkout.repo(), checkout.top().toString(), checkout.path(), args, System.currentTimeMillis()));
 	}
 
 	private void serveLease(Wire wire, Map<String, Object> message) throws IOException {
@@ -310,12 +373,14 @@ public final class Daemon {
 			}
 		});
 		log("queue #" + lease.id + " " + lease.describe() + (request.play() ? " [playing]" : request.exclusive() ? " [alone]" : ""));
+		if (request.stoppable()) stoppable.put(lease.id, wire);
 		try {
 			while (true) {
 				Map<String, Object> next = wire.read();
 				if (next == null || "release".equals(next.get("type"))) break;
 			}
 		} finally {
+			stoppable.remove(lease.id);
 			scheduler.release(lease);
 			log("done #" + lease.id + " " + lease.describe());
 		}
@@ -362,7 +427,11 @@ public final class Daemon {
 		s.put("config", config.toMap());
 		s.put("recent", history.last(5));
 		s.put("watching", watcher.describe());
-		s.put("testing", watcher.testing());
+		// What a newer Spawnproof waits for before it replaces this one: builds that are between games much of the time.
+		List<String> testing = new ArrayList<>(watcher.testing());
+		testing.addAll(reruns.running());
+		s.put("testing", testing);
+		s.put("reruns", reruns.describe());
 		s.put("runsFolder", KeptRuns.folder().toAbsolutePath().toString());
 		return s;
 	}
