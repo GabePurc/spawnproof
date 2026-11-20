@@ -73,6 +73,11 @@ public final class GitHub {
 		return m.find() ? m.group(1) + "/" + m.group(2) : null;
 	}
 
+	/** A pull request's page, for people to open. */
+	public static String pullUrl(String repo, long number) {
+		return "https://github.com/" + repo + "/pull/" + number;
+	}
+
 	/** Where a token can be kept for Spawnproof alone, instead of using gh's. */
 	public static Path tokenFile() {
 		return Dirs.config().resolve("github-token");

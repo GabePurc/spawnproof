@@ -1,5 +1,11 @@
 package io.github.gabepurc.spawnproof.run;
 
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import java.util.LinkedHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Future;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
 import io.github.gabepurc.spawnproof.Dirs;
 import io.github.gabepurc.spawnproof.Json;
 import io.github.gabepurc.spawnproof.Wire;
@@ -37,7 +43,10 @@ class TestRunFunctionalTest {
 	private Path home;
 	private Path project;
 
-	/** The stand-in game. Its tests are a, b, c and d, or the ones in spawnproof.tests; fake.failing fails some, crash exits. */
+	/**
+	 * The stand-in game. Its tests are a, b, c and d, or the ones in spawnproof.tests; fake.failing fails some, fake.stuck
+	 * hangs in one, crash exits.
+	 */
 	private static final String FAKE_GAME = """
 		import java.io.*;
 		import java.net.*;
@@ -79,6 +88,10 @@ class TestRunFunctionalTest {
 					String name = line.substring(4);
 					System.out.println("[spawnproof] " + name + ": started");
 					if (name.equals("crash")) System.exit(3);
+					if (name.equals(System.getProperty("fake.stuck"))) {
+						Files.writeString(Path.of("stuck.txt"), "");
+						Thread.sleep(120_000);
+					}
 					Thread.sleep(700);
 					boolean ok = !failing.contains(name);
 					Path shot = out.resolve("screenshots/" + name + "/shot.png");
@@ -136,6 +149,7 @@ class TestRunFunctionalTest {
 			"\tmainClass = 'FakeGame'",
 			"\tworkingDir = runFolder",
 			"\tsystemProperty 'fake.failing', findProperty('fakeFailing') ?: ''",
+			"\tsystemProperty 'fake.stuck', findProperty('fakeStuck') ?: ''",
 			"\tdoFirst {",
 			"\t\trunFolder.mkdirs()",
 			"\t\tnew File(runFolder, 'setup.txt').text = 'what the build puts in the run folder'",
@@ -309,5 +323,35 @@ class TestRunFunctionalTest {
 		BuildResult result = runner(Map.of(), "runClientGameTest").buildAndFail();
 		assertFalse(result.getOutput().contains("running the tests across"), result.getOutput());
 		assertFalse(Files.exists(project.resolve("run/games")));
+	}
+
+	@Test
+	void aStuckGameIsStoppedFromTheQueueAndTheRunCarriesOn() throws Exception {
+		ExecutorService pool = Executors.newSingleThreadExecutor();
+		try {
+			Future<BuildResult> build = pool.submit(() -> runner(Map.of(), "runClientGameTest", "-Pspawnproof.games=1", "-PfakeStuck=b").buildAndFail());
+			Path stuck = project.resolve("run/games/1/stuck.txt");
+			long deadline = System.currentTimeMillis() + 90_000;
+			while (!Files.exists(stuck) && System.currentTimeMillis() < deadline) Thread.sleep(100);
+			assertTrue(Files.exists(stuck), "the game got to the test that hangs");
+			List<Map<String, Object>> running = Json.list(Client.call(Map.of("type", "status"), false), "running");
+			assertEquals(1, running.size(), running.toString());
+			Client.call(Map.of("type", "stop-game", "id", Json.num(running.get(0), "id", -1), "by", "the dashboard"), false);
+
+			BuildResult result = build.get(60, TimeUnit.SECONDS);
+			Map<String, Object> r = results();
+			assertEquals(List.of("a", "b", "c", "d"), names(r), result.getOutput());
+			Map<String, String> statuses = new LinkedHashMap<>();
+			for (Map<String, Object> t : Json.list(r, "tests")) statuses.put(Json.str(t, "name"), Json.str(t, "status"));
+			assertEquals("passed", statuses.get("a"), statuses.toString());
+			assertNotEquals("passed", statuses.get("b"), statuses.toString());
+			assertEquals("passed", statuses.get("c"), "a game in its place ran the rest: " + statuses);
+			assertEquals("passed", statuses.get("d"), statuses.toString());
+			String text = Files.readString(project.resolve("run/spawnproof/results.json"));
+			assertTrue(text.contains("stopped from the dashboard"), "the results say why b didn't finish: " + text);
+			assertTrue(result.getOutput().contains("game 1 stopped from the dashboard"), result.getOutput());
+		} finally {
+			pool.shutdownNow();
+		}
 	}
 }

@@ -60,6 +60,29 @@ public final class Client {
 			this.note = Json.str(granted, "note");
 		}
 
+		/**
+		 * Listens for the daemon asking the game to stop (someone pressed Stop in the dashboard), on a thread of its own
+		 * for as long as the slot is held.
+		 */
+		private void listen(Consumer<String> onStop) {
+			Thread t = new Thread(() -> {
+				try {
+					while (true) {
+						Map<String, Object> m = connection.wire.read();
+						if (m == null) return;
+						if ("stop".equals(m.get("type"))) {
+							String reason = Json.str(m, "reason");
+							onStop.accept(reason == null ? "stopped on request" : reason);
+						}
+					}
+				} catch (IOException | RuntimeException e) {
+					// The slot was let go, or the daemon went.
+				}
+			}, "spawnproof-lease-" + id);
+			t.setDaemon(true);
+			t.start();
+		}
+
 		@Override
 		public void close() {
 			try {
@@ -129,17 +152,30 @@ public final class Client {
 
 	/** Waits for a game slot. progress hears where in line the game is whenever that changes. */
 	public static Lease acquire(Map<String, Object> request, Consumer<String> progress) throws IOException {
+		return acquire(request, progress, null);
+	}
+
+	/**
+	 * Waits for a game slot, for a game that can be stopped from the queue: once it has its slot, onStop hears why
+	 * whenever the daemon asks for the game to stop, and stops it.
+	 */
+	public static Lease acquire(Map<String, Object> request, Consumer<String> progress, Consumer<String> onStop) throws IOException {
 		Connection c = connectCurrent(progress);
 		try {
 			Map<String, Object> message = new LinkedHashMap<>(request);
 			message.put("type", "acquire");
+			if (onStop != null) message.put("stoppable", true);
 			c.wire.send(message);
 			String told = null;
 			while (true) {
 				Map<String, Object> m = c.wire.read();
 				if (m == null) throw new IOException("Spawnproof's daemon closed the connection");
 				String type = String.valueOf(m.get("type"));
-				if (type.equals("granted")) return new Lease(c, m);
+				if (type.equals("granted")) {
+					Lease lease = new Lease(c, m);
+					if (onStop != null) lease.listen(onStop);
+					return lease;
+				}
 				if (type.equals("error")) throw new IOException(Json.str(m, "message"));
 				if (type.equals("queued")) {
 					String text = Text.queued(m);

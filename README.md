@@ -37,7 +37,8 @@ faster than normal on a clock that counts drawn frames.
 - **Pull requests tested on your machine.** `spawnproof watch` tests each new commit on a mod's GitHub pull requests here,
   not on GitHub's machines, and puts the result on the pull request as a check you can require before merging.
 - **A dashboard.** `spawnproof dashboard` opens a desktop app that shows what's running and waiting, and each mod's past
-  test runs with their checks, errors and screenshots.
+  test runs with their checks, errors and screenshots. Its buttons run tests again, set the queue, watch repos and stop
+  what's stuck.
 
 ## Setup
 
@@ -206,7 +207,8 @@ How it goes:
 
 ## The dashboard
 
-A desktop app for looking at what Spawnproof is doing and has done:
+A desktop app for looking at what Spawnproof is doing and has done, and for doing what the `spawnproof` command can
+without a terminal:
 
 ```bash
 spawnproof dashboard
@@ -218,6 +220,22 @@ spawnproof dashboard
 - **Results**: a project's past test runs, from each of its checkouts and its pull requests. Each shows its tests, their
   checks (what failed and why), errors with their stack traces, which game ran what, and the screenshots, which open full
   size.
+
+What its buttons do:
+
+- **Run tests again**, from a past run's page: every test, the ones that didn't pass, or one test. It's `spawnproof test`
+  in the folder that run was made in, so its games wait their turn like any other build's. Live shows how it's going,
+  with its console, and its results are kept as a run of their own.
+- **The queue**, in Live: pause and resume, how many games run at once, and the hidden display.
+- **Watched repos**: a project's page starts testing its repo's pull requests on this machine (`spawnproof watch`); Live
+  lists each pull request with how it went and a link to it on GitHub, tests one now (`spawnproof pr`), one from a fork
+  too, and stops watching.
+- **Stop** a game that's stuck, a run started from the app, or a pull request's test. A stopped game's test is noted as
+  stopped, and the rest of its test run carries on. A game whose build uses a Spawnproof from before 0.5.0 has no Stop
+  button: that build doesn't listen for it.
+
+A pull request's run isn't run again from its page, since it was made in Spawnproof's own clone of the repo: Test now,
+beside the pull request, tests it again.
 
 Past runs are kept in Spawnproof's state folder (`runs/`), since Loom clears the run folder before every run: a test run
 (`spawnproof test`, `-Pspawnproof.games`) and a game task run on its own both keep their results when they end, if their

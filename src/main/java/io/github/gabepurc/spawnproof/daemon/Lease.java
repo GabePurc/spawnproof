@@ -8,9 +8,12 @@ import java.util.Map;
 
 /** One game's place in the queue, from asking until its build lets go (or dies: closing the connection lets go too). */
 public final class Lease {
-	/** What a game asks for. A play lease is someone playing: it never waits, and holds new test games back while it lasts. */
+	/**
+	 * What a game asks for. A play lease is someone playing: it never waits, and holds new test games back while it lasts.
+	 * A stoppable one listens for the daemon asking its game to stop (builds with an older Spawnproof don't).
+	 */
 	public record Request(String project, String task, String dir, String branch, String label, boolean play, boolean exclusive,
-		boolean hidden, long pid) {
+		boolean hidden, long pid, boolean stoppable) {
 		public static Request from(Map<String, Object> m) {
 			return new Request(
 				orElse(Json.str(m, "project"), "?"),
@@ -21,7 +24,8 @@ public final class Lease {
 				"play".equals(Json.str(m, "role")),
 				Json.bool(m, "exclusive"),
 				!Boolean.FALSE.equals(m.get("hidden")),
-				Json.num(m, "pid", -1));
+				Json.num(m, "pid", -1),
+				Json.bool(m, "stoppable"));
 		}
 
 		private static String orElse(String v, String fallback) {
@@ -73,6 +77,7 @@ public final class Lease {
 		m.put("exclusive", request.exclusive());
 		m.put("hidden", request.hidden());
 		m.put("pid", request.pid());
+		m.put("stoppable", request.stoppable());
 		m.put("queuedAt", queuedAt);
 		if (startedAt > 0) m.put("startedAt", startedAt);
 		if (display != null) m.put("display", display);

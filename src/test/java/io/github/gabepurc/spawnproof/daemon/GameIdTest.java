@@ -25,7 +25,7 @@ class GameIdTest {
 	}
 
 	private static Lease ask(Scheduler scheduler) {
-		Lease.Request r = new Lease.Request("Mod", "runClientGameTest", "/mod", "main", null, false, false, true, 1);
+		Lease.Request r = new Lease.Request("Mod", "runClientGameTest", "/mod", "main", null, false, false, true, 1, false);
 		return scheduler.enqueue(r, new Lease.Listener() {
 			@Override
 			public void queued(Lease lease, int position, String reason, List<String> running) {}

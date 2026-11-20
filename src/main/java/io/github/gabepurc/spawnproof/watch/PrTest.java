@@ -1,11 +1,11 @@
 package io.github.gabepurc.spawnproof.watch;
 
 import io.github.gabepurc.spawnproof.Json;
+import io.github.gabepurc.spawnproof.Processes;
 import io.github.gabepurc.spawnproof.cli.TestCommand;
 import io.github.gabepurc.spawnproof.run.MergedResults;
 
 import java.io.IOException;
-import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -152,7 +152,7 @@ final class PrTest {
 				}
 			}
 		}
-		return Report.of(exit, results, kept, tail(log, 3000), log.toString(), duration);
+		return Report.of(exit, results, kept, Processes.tail(log, 3000), log.toString(), duration);
 	}
 
 	private boolean stopped() {
@@ -205,20 +205,6 @@ final class PrTest {
 				if (Files.isDirectory(f)) Files.createDirectories(target);
 				else Files.copy(f, target, StandardCopyOption.REPLACE_EXISTING);
 			}
-		}
-	}
-
-	/** The last lines of a file, read from its end so a long console isn't read whole. */
-	static List<String> tail(Path file, int lines) throws IOException {
-		try (RandomAccessFile f = new RandomAccessFile(file.toFile(), "r")) {
-			long length = f.length();
-			long from = Math.max(0, length - 400_000);
-			f.seek(from);
-			byte[] bytes = new byte[(int) (length - from)];
-			f.readFully(bytes);
-			List<String> all = new String(bytes, StandardCharsets.UTF_8).lines().toList();
-			if (from > 0 && !all.isEmpty()) all = all.subList(1, all.size());
-			return all.subList(Math.max(0, all.size() - lines), all.size());
 		}
 	}
 

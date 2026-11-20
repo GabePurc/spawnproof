@@ -78,6 +78,12 @@ public final class Scheduler {
 		calls.forEach(Runnable::run);
 	}
 
+	/** The running test game with this id, or null: it's waiting, someone's playing it, or it's done. */
+	public synchronized Lease running(long id) {
+		for (Lease l : running) if (l.id == id) return l;
+		return null;
+	}
+
 	public synchronized boolean isEmpty() {
 		return waiting.isEmpty() && running.isEmpty() && playing.isEmpty();
 	}

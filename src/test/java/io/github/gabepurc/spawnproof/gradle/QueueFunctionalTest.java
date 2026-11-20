@@ -1,5 +1,9 @@
 package io.github.gabepurc.spawnproof.gradle;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CompletableFuture;
+import io.github.gabepurc.spawnproof.Json;
 import io.github.gabepurc.spawnproof.Dirs;
 import io.github.gabepurc.spawnproof.cli.Main;
 import io.github.gabepurc.spawnproof.client.Client;
@@ -338,5 +342,68 @@ class QueueFunctionalTest {
 		assertFalse(gameJava(result).startsWith(home.toString()), result.getOutput());
 		assertTrue(Files.exists(a.resolve("ran.txt")), "the game still ran");
 		assertTrue(String.join("\n", history(1)).contains("\"hidden\":false"), history(1).toString());
+	}
+
+	@Test
+	void theQueueIsPausedAndSetOverTheSocket() throws Exception {
+		Client.call(Map.of("type", "pause"), true);
+		assertEquals(Boolean.TRUE, Client.call(Map.of("type", "status"), false).get("paused"));
+		Client.call(Map.of("type", "resume"), false);
+		assertEquals(Boolean.FALSE, Client.call(Map.of("type", "status"), false).get("paused"));
+
+		Client.call(Map.of("type", "set", "key", "slots", "value", "3"), false);
+		assertEquals(3L, Json.num(Client.call(Map.of("type", "status"), false), "slots", -1));
+		assertTrue(Files.readString(home.resolve("config/config.properties")).contains("slots=3"), "and it's kept for next time");
+		assertThrows(IOException.class, () -> Client.call(Map.of("type", "set", "key", "slots", "value", "none"), false));
+	}
+
+	@Test
+	void aRunningGameIsToldToStop() throws Exception {
+		CompletableFuture<String> told = new CompletableFuture<>();
+		try (Client.Lease lease = Client.acquire(Map.of("project", "mod", "task", "game", "hidden", false), m -> {}, told::complete)) {
+			Map<String, Object> status = Client.call(Map.of("type", "status"), false);
+			assertEquals(Boolean.TRUE, Json.list(status, "running").get(0).get("stoppable"), status.toString());
+			Map<String, Object> reply = Client.call(Map.of("type", "stop-game", "id", lease.id, "by", "the dashboard"), false);
+			assertTrue(Json.str(reply, "message").contains("Stopping game #" + lease.id), reply.toString());
+			assertEquals("stopped from the dashboard", told.get(10, TimeUnit.SECONDS));
+		}
+		// A build with a Spawnproof from before this: its game holds a slot, but doesn't listen.
+		try (Client.Lease old = Client.acquire(Map.of("project", "mod", "task", "game", "hidden", false), m -> {})) {
+			IOException e = assertThrows(IOException.class, () -> Client.call(Map.of("type", "stop-game", "id", old.id), false));
+			assertTrue(e.getMessage().contains("older Spawnproof"), e.getMessage());
+		}
+		IOException gone = assertThrows(IOException.class, () -> Client.call(Map.of("type", "stop-game", "id", 999), false));
+		assertTrue(gone.getMessage().contains("isn't running"), gone.getMessage());
+	}
+
+	@Test
+	void stoppingAGameFromTheQueueStopsItsBuild() throws Exception {
+		Path a = project("mod-a", true, 60_000, "");
+		ExecutorService pool = Executors.newSingleThreadExecutor();
+		try {
+			Future<BuildResult> build = pool.submit(() -> runner(a, Map.of(), "runClientGameTest").buildAndFail());
+			long deadline = System.currentTimeMillis() + 60_000;
+			List<Map<String, Object>> running = List.of();
+			while (running.isEmpty() && System.currentTimeMillis() < deadline) {
+				Thread.sleep(100);
+				try {
+					running = Json.list(Client.call(Map.of("type", "status"), false), "running");
+				} catch (IOException notUpYet) {
+					// The build starts the daemon.
+				}
+			}
+			assertEquals(1, running.size(), "the game is running");
+			// (A moment for the game itself to start: the slot comes just before it.)
+			Thread.sleep(1500);
+			long asked = System.currentTimeMillis();
+			Client.call(Map.of("type", "stop-game", "id", Json.num(running.get(0), "id", -1), "by", "the dashboard"), false);
+			BuildResult result = build.get(40, TimeUnit.SECONDS);
+			assertTrue(System.currentTimeMillis() - asked < 40_000, "stopped well before the game's 60 s");
+			assertTrue(result.getOutput().contains(":runClientGameTest was stopped from the dashboard"), result.getOutput());
+			assertFalse(Files.exists(a.resolve("ran.txt")), "the game didn't finish");
+		} finally {
+			pool.shutdownNow();
+		}
+		assertEquals(1, history(1).size(), "its slot came free");
 	}
 }

@@ -1,5 +1,6 @@
 package io.github.gabepurc.spawnproof.run;
 
+import io.github.gabepurc.spawnproof.Processes;
 import io.github.gabepurc.spawnproof.client.Client;
 
 import java.io.BufferedReader;
@@ -45,6 +46,8 @@ final class Game implements Runnable {
 	String leaving;
 	/** Why the run stopped it, when it did. */
 	String stoppedBecause;
+	/** Asked to stop from the queue, perhaps before it had started. */
+	private boolean stopRequested;
 	private boolean connected;
 	private boolean disconnected;
 	private volatile Process process;
@@ -84,13 +87,16 @@ final class Game implements Runnable {
 				run.noteNoDisplay(lease.note);
 			}
 			Process p;
+			boolean stopNow;
 			synchronized (run) {
 				// (Started under the run's lock, so the run's shutdown hook can't miss it.)
 				p = pb.start();
 				process = p;
 				startedAt = System.currentTimeMillis();
+				stopNow = stopRequested;
 			}
 			p.getOutputStream().close();
+			if (stopNow) stop(p);
 			Thread pump = new Thread(() -> pump(p), "spawnproof-game-" + number + "-output");
 			pump.setDaemon(true);
 			pump.start();
@@ -127,7 +133,7 @@ final class Game implements Runnable {
 	/** Waits for a slot. Null if the queue can't be reached: the game then runs anyway, as games do without Spawnproof. */
 	private Client.Lease acquire() throws IOException {
 		try {
-			return Client.acquire(run.leaseRequest(this), message -> run.say("game " + number + " is " + message));
+			return Client.acquire(run.leaseRequest(this), message -> run.say("game " + number + " is " + message), this::stopOnRequest);
 		} catch (InterruptedIOException | ClosedByInterruptException e) {
 			throw e;
 		} catch (IOException | RuntimeException e) {
@@ -175,17 +181,23 @@ final class Game implements Runnable {
 	}
 
 	private static void stop(Process p) {
-		p.descendants().forEach(ProcessHandle::destroy);
-		p.destroy();
-		try {
-			if (!p.waitFor(10, TimeUnit.SECONDS)) {
-				p.descendants().forEach(ProcessHandle::destroyForcibly);
-				p.destroyForcibly();
-			}
-		} catch (InterruptedException e) {
-			p.destroyForcibly();
-			Thread.currentThread().interrupt();
+		Processes.stop(p, 10);
+	}
+
+	/**
+	 * Someone stopped this game from the queue (the dashboard's Stop): a game that's stuck, most likely. The test it was
+	 * running is noted as lost to that, and the run carries on with the rest.
+	 */
+	private void stopOnRequest(String reason) {
+		Process p;
+		synchronized (run) {
+			if (state == State.ENDED || state == State.CANCELLED) return;
+			stoppedBecause = reason;
+			stopRequested = true;
+			p = process;
 		}
+		run.say("game " + number + " " + reason);
+		if (p != null) stop(p);
 	}
 
 	boolean alive() {

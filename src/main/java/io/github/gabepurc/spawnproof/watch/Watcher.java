@@ -281,6 +281,22 @@ public final class Watcher {
 			+ (position <= 1 ? "next" : "number " + position + " in line") + " to be tested on this machine.");
 	}
 
+	/**
+	 * Stops the test a repo is running now (one that's stuck, say). GitHub hears it wasn't finished; the pull request is
+	 * tested again at its next commit, or when asked (spawnproof pr).
+	 */
+	public Map<String, Object> stopTest(String name, String why) throws IOException {
+		PrTest test;
+		synchronized (this) {
+			Repo r = repos.get(name);
+			if (r == null) throw new IOException(name + " isn't watched");
+			test = r.test;
+		}
+		if (test == null) throw new IOException("no pull request of " + name + " is being tested right now");
+		test.stop(why);
+		return Map.of("type", "ok", "message", "Stopping the test of " + name + " pull request #" + test.pr + ".");
+	}
+
 	/** What's watched and how it's going, for spawnproof status. */
 	public synchronized List<Map<String, Object>> describe() {
 		List<Map<String, Object>> out = new ArrayList<>();
@@ -297,6 +313,7 @@ public final class Watcher {
 				t.put("sha", r.current.sha());
 				t.put("title", r.current.title());
 				t.put("startedAt", r.testStartedAt);
+				t.put("url", GitHub.pullUrl(r.name(), r.current.pr()));
 				m.put("testing", t);
 			}
 			List<Object> waiting = new ArrayList<>();
@@ -311,6 +328,7 @@ public final class Watcher {
 				p.put("title", e.getValue().title);
 				p.put("summary", e.getValue().summary);
 				p.put("at", e.getValue().at);
+				p.put("url", GitHub.pullUrl(r.name(), e.getKey()));
 				prs.add(p);
 			}
 			m.put("prs", prs);
@@ -577,15 +595,18 @@ public final class Watcher {
 			if (stopping) return;
 			String stopped = test.stoppedBecause();
 			if (outcome == null || stopped != null) {
+				// Stopped is stopped, however far it had got: while it was still fetching the commit, it comes back with no outcome
+				// too, but the commit hasn't gone anywhere.
+				boolean gone = stopped == null;
 				synchronized (this) {
 					Pr p = r.prs.get(job.pr());
 					if (p != null && job.sha().equals(p.sha)) {
-						p.state = outcome == null ? "gone" : "error";
-						p.summary = outcome == null ? "The commit went before its turn" : "Not finished: " + stopped;
+						p.state = gone ? "gone" : "error";
+						p.summary = gone ? "The commit went before its turn" : "Not finished: " + stopped;
 						save(r);
 					}
 				}
-				tell(r, job.sha(), "error", outcome == null ? "Not tested: the commit went before its turn" : "Not finished: " + stopped, null);
+				tell(r, job.sha(), "error", gone ? "Not tested: the commit went before its turn" : "Not finished: " + stopped, null);
 				if (stopped != null) log.accept(r.name() + " PR #" + job.pr() + " stopped: " + stopped);
 				continue;
 			}

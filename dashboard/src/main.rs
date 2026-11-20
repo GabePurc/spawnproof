@@ -1,5 +1,6 @@
 // Spawnproof's dashboard: a window onto the machine's Spawnproof daemon. It shows the projects Spawnproof knows of, the
-// queue as it changes, and past test runs with their checks and screenshots.
+// queue as it changes, and past test runs with their checks and screenshots, and it does what the `spawnproof` command
+// can without a terminal: run tests again, pause and set the queue, watch repos, and stop what's stuck.
 //
 // The app is a client of the daemon, like the `spawnproof` command: it talks to the same socket, one JSON object per
 // line, and asks only for what the command could. The window (ui/) is plain HTML and JavaScript; this side passes its
@@ -24,9 +25,33 @@ use std::os::unix::net::UnixStream;
 #[cfg(not(unix))]
 compile_error!("The dashboard works on Linux and macOS so far.");
 
-/// What the window may ask the daemon. Acting on things (rerunning tests, pausing the queue) comes later, and will be
-/// added here one request at a time.
-const ALLOWED: &[&str] = &["status", "projects", "runs", "run"];
+/// What the window may ask the daemon: what it shows, then what its buttons do. Anything else is turned down here, so a
+/// page that went wrong can't stop the daemon, say.
+const ALLOWED: &[&str] = &[
+    "status", "projects", "runs", "run", // What it shows.
+    "pause", "resume", "set", // The queue.
+    "rerun", "stop-rerun", "rerun-log", // Tests run again.
+    "stop-game", // A game that's stuck.
+    "watch", "unwatch", "test-pr", "stop-pr", // Watched repos.
+];
+
+/// The settings the window changes: the queue's game slots and the hidden display. The rest stay with `spawnproof config`.
+const SETTINGS: &[&str] = &["slots", "display"];
+
+/// Whether the window may ask this of the daemon; if not, why not.
+fn allowed(request: &Value) -> Result<(), String> {
+    let kind = request.get("type").and_then(Value::as_str).unwrap_or_default();
+    if !ALLOWED.contains(&kind) {
+        return Err(format!("the dashboard doesn't ask Spawnproof for '{kind}'"));
+    }
+    if kind == "set" {
+        let key = request.get("key").and_then(Value::as_str).unwrap_or_default();
+        if !SETTINGS.contains(&key) {
+            return Err(format!("the dashboard doesn't change the setting '{key}' (spawnproof config does)"));
+        }
+    }
+    Ok(())
+}
 
 /// Where the daemon keeps past runs, from its status: screenshots are served only from in there.
 struct RunsFolder(Mutex<Option<PathBuf>>);
@@ -104,19 +129,56 @@ fn call(request: &Value) -> Result<Value, String> {
     c.send(request).map_err(|e| e.to_string())?;
     let reply = c.read().map_err(|e| e.to_string())?;
     if reply.get("type").and_then(Value::as_str) == Some("error") {
-        return Err(reply.get("message").and_then(Value::as_str).unwrap_or("Spawnproof said no").to_string());
+        let message = reply.get("message").and_then(Value::as_str).unwrap_or("Spawnproof said no");
+        if message.starts_with("unknown request") {
+            return Err(format!(
+                "Spawnproof {} is running, which is older than this dashboard and can't do that. It's replaced once its games are done: try again then",
+                c.version
+            ));
+        }
+        return Err(message.to_string());
     }
     Ok(reply)
 }
 
 /// The window's requests to the daemon.
 #[tauri::command]
-async fn daemon(request: Value) -> Result<Value, String> {
-    let kind = request.get("type").and_then(Value::as_str).unwrap_or_default().to_string();
-    if !ALLOWED.contains(&kind.as_str()) {
-        return Err(format!("the dashboard doesn't ask Spawnproof for '{kind}'"));
+async fn daemon(mut request: Value) -> Result<Value, String> {
+    allowed(&request)?;
+    // Who's asking: a game stopped from here says so on its build's console.
+    if let Some(fields) = request.as_object_mut() {
+        fields.insert("by".into(), json!("the dashboard"));
     }
     tauri::async_runtime::spawn_blocking(move || call(&request)).await.map_err(|e| e.to_string())?
+}
+
+/// Opens a pull request's page in the browser. The address comes from the daemon's status, and only one that is a pull
+/// request on GitHub is opened.
+#[tauri::command]
+fn open_link(url: String) -> Result<(), String> {
+    if !is_pull_request(&url) {
+        return Err("the dashboard only opens pull requests on GitHub".into());
+    }
+    let program = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let mut child = Command::new(program)
+        .arg(&url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("couldn't open {url} ({program}: {e})"))?;
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+/// https://github.com/<owner>/<repo>/pull/<number>, and nothing more.
+fn is_pull_request(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://github.com/") else { return false };
+    let parts: Vec<&str> = rest.split('/').collect();
+    let name = |s: &str| !s.is_empty() && s != "." && s != ".." && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    parts.len() == 4 && name(parts[0]) && name(parts[1]) && parts[2] == "pull" && !parts[3].is_empty() && parts[3].chars().all(|c| c.is_ascii_digit())
 }
 
 /// Follows the daemon's status, a message a second, and hands each to the window as a "status" event. When the daemon
@@ -248,7 +310,7 @@ fn main() {
     tauri::Builder::default()
         .manage(RunsFolder(Mutex::new(None)))
         .register_uri_scheme_protocol("shot", |ctx, request| serve_shot(ctx.app_handle(), &request))
-        .invoke_handler(tauri::generate_handler![daemon])
+        .invoke_handler(tauri::generate_handler![daemon, open_link])
         .setup(|app| {
             follow(app.handle().clone());
             Ok(())
@@ -266,5 +328,32 @@ mod tests {
         assert_eq!(decode("20261109-120000-000-abcd/screenshots/my%20test/front.png"), "20261109-120000-000-abcd/screenshots/my test/front.png");
         assert_eq!(decode("a%2"), "a%2");
         assert_eq!(decode("100%"), "100%");
+    }
+
+    #[test]
+    fn the_window_asks_only_for_what_its_buttons_do() {
+        assert!(allowed(&json!({"type": "status"})).is_ok());
+        assert!(allowed(&json!({"type": "rerun", "id": "20261109-120000-000-abcd"})).is_ok());
+        assert!(allowed(&json!({"type": "stop-game", "id": 12})).is_ok());
+        assert!(allowed(&json!({"type": "set", "key": "slots", "value": "3"})).is_ok());
+        assert!(allowed(&json!({"type": "set", "key": "display", "value": "xvfb"})).is_ok());
+        // Not the daemon itself, nor where it reports to.
+        assert!(allowed(&json!({"type": "stop", "force": true})).is_err());
+        assert!(allowed(&json!({"type": "set", "key": "githubApi", "value": "https://example.com"})).is_err());
+        assert!(allowed(&json!({"type": "acquire"})).is_err());
+        assert!(allowed(&json!({})).is_err());
+    }
+
+    #[test]
+    fn only_pull_requests_on_github_are_opened() {
+        assert!(is_pull_request("https://github.com/GabePurc/spawnproof/pull/28"));
+        assert!(is_pull_request("https://github.com/some-one/a.mod_2/pull/1"));
+        assert!(!is_pull_request("http://github.com/GabePurc/spawnproof/pull/28"));
+        assert!(!is_pull_request("https://github.com.example.com/GabePurc/spawnproof/pull/28"));
+        assert!(!is_pull_request("https://github.com/GabePurc/spawnproof/pull/28/files"));
+        assert!(!is_pull_request("https://github.com/GabePurc/spawnproof/pull/28?x=1"));
+        assert!(!is_pull_request("https://github.com/GabePurc/../pull/28"));
+        assert!(!is_pull_request("file:///etc/passwd"));
+        assert!(!is_pull_request("https://github.com/GabePurc/spawnproof/pull/"));
     }
 }

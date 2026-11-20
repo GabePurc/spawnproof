@@ -8,6 +8,8 @@ import io.github.gabepurc.spawnproof.client.Client;
 import io.github.gabepurc.spawnproof.client.DaemonStarter;
 import io.github.gabepurc.spawnproof.client.Text;
 import io.github.gabepurc.spawnproof.daemon.DaemonConfig;
+import io.github.gabepurc.spawnproof.Processes;
+import io.github.gabepurc.spawnproof.watch.Checkout;
 import io.github.gabepurc.spawnproof.watch.GitHub;
 
 import java.io.IOException;
@@ -204,7 +206,7 @@ public final class Main {
 		if (command.isEmpty()) throw new UsageException("run [options] -- <command...>");
 		if (System.getenv("SPAWNPROOF_LEASE") != null) {
 			// Already inside a queued game (a run within a run): waiting again could wait on itself.
-			return exec(command, null, null);
+			return exec(command, null, null, null);
 		}
 		Path dir = Path.of("").toAbsolutePath();
 		Map<String, Object> request = new LinkedHashMap<>();
@@ -218,13 +220,38 @@ public final class Main {
 		request.put("exclusive", exclusive);
 		request.put("hidden", !visible);
 		request.put("pid", ProcessHandle.current().pid());
-		try (Client.Lease lease = Client.acquire(request, message -> err.println("spawnproof: " + message))) {
+		// The dashboard's Stop: the command goes, and whatever it started with it.
+		Stoppable child = new Stoppable();
+		try (Client.Lease lease = Client.acquire(request, message -> err.println("spawnproof: " + message), reason -> {
+			err.println("spawnproof: " + reason);
+			child.stop();
+		})) {
 			if (lease.note != null && !visible && !play) err.println("spawnproof: " + lease.note);
-			return exec(command, lease.display, Long.toString(lease.id));
+			return exec(command, lease.display, Long.toString(lease.id), child);
 		}
 	}
 
-	private static int exec(List<String> command, String display, String leaseId) throws IOException {
+	/** The command `spawnproof run` started, which may be asked to stop before it has. */
+	private static final class Stoppable {
+		private Process process;
+		private boolean stopped;
+
+		synchronized void started(Process p) {
+			process = p;
+			if (stopped) stop();
+		}
+
+		void stop() {
+			Process p;
+			synchronized (this) {
+				stopped = true;
+				p = process;
+			}
+			if (p != null) Processes.stop(p, 10);
+		}
+	}
+
+	private static int exec(List<String> command, String display, String leaseId, Stoppable child) throws IOException {
 		ProcessBuilder pb = new ProcessBuilder(command).inheritIO();
 		Map<String, String> env = pb.environment();
 		if (leaseId != null) env.put("SPAWNPROOF_LEASE", leaseId);
@@ -235,6 +262,7 @@ public final class Main {
 			env.put("XDG_SESSION_TYPE", "x11");
 		}
 		Process p = pb.start();
+		if (child != null) child.started(p);
 		try {
 			return p.waitFor();
 		} catch (InterruptedException e) {
@@ -321,36 +349,13 @@ public final class Main {
 		}
 	}
 
-	/** The GitHub repo this folder is a checkout of (its origin), the checkout's top folder, and this folder in it. */
-	private record Here(String repo, Path top, Path dir) {
-		/** This folder from the checkout's top, with / between folders: "" at the top. */
-		String path() {
-			return top.relativize(dir).toString().replace('\\', '/');
-		}
-	}
-
-	private static Here here() throws IOException {
-		Path dir = Path.of("").toAbsolutePath().toRealPath();
-		String top = git(dir, "rev-parse", "--show-toplevel");
-		if (top == null) throw new IOException(dir + " isn't in a git checkout: run this in a mod's folder");
-		String url = git(dir, "remote", "get-url", "origin");
-		String repo = GitHub.repoFromUrl(url);
-		if (repo == null) throw new IOException("this checkout's origin (" + (url == null ? "none" : url) + ") isn't a GitHub repo");
-		return new Here(repo, Path.of(top).toRealPath(), dir);
-	}
-
-	/** What a git command prints, or null if it fails. */
-	private static String git(Path dir, String... args) throws IOException {
-		List<String> command = new ArrayList<>(List.of("git"));
-		command.addAll(List.of(args));
-		Process p = new ProcessBuilder(command).directory(dir.toFile()).redirectError(ProcessBuilder.Redirect.DISCARD).start();
-		p.getOutputStream().close();
-		String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+	/** This folder, as a checkout of a GitHub repo. */
+	private static Checkout here() throws IOException {
 		try {
-			return p.waitFor() == 0 && !out.isEmpty() ? out : null;
-		} catch (InterruptedException e) {
-			Thread.currentThread().interrupt();
-			throw new java.io.InterruptedIOException("cancelled");
+			return Checkout.of(Path.of(""));
+		} catch (IOException e) {
+			if (String.valueOf(e.getMessage()).endsWith("isn't in a git checkout")) throw new IOException(e.getMessage() + ": run this in a mod's folder");
+			throw e;
 		}
 	}
 
@@ -428,7 +433,7 @@ public final class Main {
 		} catch (TestCommand.BadOptions e) {
 			throw new UsageException("watch [<tests>] [--games <n>] [--skip <tests>] [--clock real] [--graphics normal] [--task <task>] [-- <gradle arguments>]");
 		}
-		Here here = here();
+		Checkout here = here();
 		try {
 			TestCommand.build(here.dir(), args);
 		} catch (TestCommand.BadOptions e) {
